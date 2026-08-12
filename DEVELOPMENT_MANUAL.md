@@ -905,3 +905,87 @@ Grounded Answer
 ```
 
 只有这条链路稳定后，才进入下一阶段。
+
+---
+
+## 27. Phase 1.5 Agent Boundary
+
+Phase 1.5 的最小 Intelligence Layer 固定为：
+
+```text
+User Question
+↓
+LLM Client
+↓
+Static Six-Tool Dispatcher
+↓
+Existing Typed Data Tool
+↓
+Compact Evidence
+↓
+LLM Final Answer
+```
+
+当前 Agent 只绑定一个已显式注册的 Dataset。Dataset ID 由程序持有，不是
+LLM Tool 参数。Tool Dispatcher 是静态 capability allowlist，不做动态发现、
+插件加载或权限推断。
+
+LLM 返回的 Tool arguments 始终是不可信输入，必须经过 typed parsing 和既有
+Execution Layer 的列、语义与资源限制校验。成功 Tool Result 只能通过
+EvidenceBuilder / EvidenceFormatter 进入 LLM context；raw result、path 和内部
+SQL 不得旁路 Evidence Layer。
+
+每个问题最多执行五个 Tool Calls。达到限制是明确失败，不是成功。Conversation
+只存在于当前进程，不包含 persistent memory、planner、RAG 或 MCP。
+
+---
+
+## 28. Phase 1.5 LLM Provider Boundary
+
+`LLMClient` 是 Agent 唯一依赖的 provider-neutral 接口。当前只允许两个显式
+adapter：OpenAI 使用 Responses API；DeepSeek 使用其 OpenAI-compatible Chat
+Completions API。Provider 由 `DATA_COPILOT_PROVIDER` 确定性选择，不做 discovery、
+fallback、routing 或自动切换。
+
+应用只在 CLI bootstrap 边界加载一次 `.env`，并使用 `override=False` 保证已有
+系统环境变量优先。Provider、model 和所选 provider 的 API key 必须显式存在；
+未知或不完整配置 fail closed。API key 不进入 Prompt、Evidence、Tool arguments
+或日志。
+
+两个 adapter 共享现有 typed conversation 和六 Tool schemas，但 provider-specific
+message mapping 保持在各自 adapter 内。Agent、ToolDispatcher、Evidence Layer 和
+`MAX_TOOL_ROUNDS = 5` 不因 provider 改变。
+
+---
+
+## 29. Phase 1.6 Evaluation Boundary
+
+Phase 1.6 的评测链路固定为：
+
+```text
+Typed Eval Case
+→ Existing DataCopilotAgent
+→ Six Safe Data Tools
+→ Compact Evidence
+→ Final Answer
+→ Deterministic Checks + Human Review Flag
+→ Structured Eval Result
+```
+
+Mock eval 使用 `FakeLLMClient`，可在 CI 中确定性运行。Live eval 必须通过显式
+CLI mode 启动，记录 provider、model、latency、Tool calls、rounds 和 provider
+可用时的 token usage；普通 pytest 不得访问付费 API。
+
+自然语言评分不采用另一个 LLM 作为唯一 judge。第一版只自动检查 required facts、
+forbidden claims、Tool selection 和 deterministic safety constraints，并明确标记
+需要人工 grounding review 的 case。Generated results 不包含 API key、resolved
+path、raw dataset 或内部 SQL。
+
+Task Success、Tool Selection、Answer Accuracy、Grounding、No-answer、Safety 和
+Efficiency 是独立指标。正确且 grounded 的答案不会仅因多余的只读 Tool 调用而被
+判为 Task Failure；该问题必须反映在 Tool Selection / Efficiency 指标中。运行失败、
+答案缺失、unsupported claim 或 forbidden capability 仍可导致 Task Failure。
+
+Eval infrastructure 只测量现有能力，不注册 Tool、不改变 Evidence channel，也不为
+特定 case 修改 System Prompt。Safety deterministic cases 的目标是 100%；其他
+live 指标首先作为真实 baseline，失败必须记录而不是 overfit。

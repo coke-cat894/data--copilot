@@ -13,6 +13,7 @@ from data_copilot.execution.query_models import (
 )
 from data_copilot.tools.aggregate import AggregateDatasetTool
 from data_copilot.tools.filter import FilterDatasetTool
+from data_copilot.tools.dispatcher import ToolDispatcher
 from data_copilot.tools.inspect import InspectDatasetTool
 from data_copilot.tools.models import (
     AggregateDatasetResult,
@@ -50,4 +51,5 @@ __all__ = [
     "SortDirection",
     "SortSpec",
     "TimeGrain",
+    "ToolDispatcher",
 ]

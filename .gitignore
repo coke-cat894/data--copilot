@@ -4,3 +4,8 @@
 __pycache__/
 *.egg-info/
 *.py[cod]
+.env
+.env.*
+!.env.example
+evals/results/*
+!evals/results/.gitkeep

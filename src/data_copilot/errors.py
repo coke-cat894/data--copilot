@@ -79,3 +79,31 @@ class EvidenceBuildError(DataCopilotError):
 
 class EvidenceLimitError(EvidenceBuildError):
     """Raised when valid structured evidence cannot fit the context limit."""
+
+
+class LLMClientError(DataCopilotError):
+    """Raised when the configured LLM client cannot produce a safe response."""
+
+
+class ConfigurationError(DataCopilotError):
+    """Raised when explicit application configuration is missing or invalid."""
+
+
+class ToolDispatchError(DataCopilotError):
+    """Base class for rejected LLM-requested Tool calls."""
+
+
+class UnknownToolError(ToolDispatchError):
+    """Raised when an LLM requests a Tool outside the static allowlist."""
+
+
+class ToolArgumentError(ToolDispatchError):
+    """Raised when untrusted Tool arguments fail structural validation."""
+
+
+class AgentExecutionError(DataCopilotError):
+    """Raised when an Agent run cannot safely reach a final answer."""
+
+
+class AgentRoundLimitError(AgentExecutionError):
+    """Raised when an Agent requests more than the allowed Tool calls."""

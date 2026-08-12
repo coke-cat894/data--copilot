@@ -7,7 +7,15 @@ than prompt instructions.
 
 ## Current status
 
-Phase 1.4 — Data Quality + Compact Evidence: **completed**.
+Phase 1.6 — Eval + Safety + Real Dataset Test: **final closure patch
+implemented; post-patch focused live validation pending**.
+
+Phase 1 — Local Data Foundation is not yet marked complete. Deterministic
+regression, Mock Eval, live safety, and one unfamiliar real-data review are
+complete. The live baseline and focused rerun exposed Tool overuse and silent
+business-semantics assumptions; the final closure patch addresses those through
+general model guidance and Tool descriptions, but its live improvement has not
+yet been measured.
 
 The current implementation:
 
@@ -18,13 +26,15 @@ The current implementation:
 - profiles numeric, categorical, datetime, boolean, and uncommon columns using
   bounded DuckDB aggregates;
 - returns reproducible bounded random samples;
-- filters bounded rows through structured AND conditions; and
+- filters bounded rows through structured AND conditions;
 - computes bounded whole-dataset, grouped, and calendar-grain aggregates;
-- checks fixed objective and heuristic data-quality signals; and
-- converts all six Tool result types into bounded, path-free compact Evidence.
+- checks fixed objective and heuristic data-quality signals;
+- converts all six Tool result types into bounded, path-free compact Evidence;
+- lets one LLM select only those six Tools through a static allowlist; and
+- returns grounded answers through a bounded in-process Agent loop and CLI.
 
-It does not yet include an LLM, Agent loop, planner, arbitrary SQL, database
-connections, cross-dataset operations, or persistence.
+It does not include an explicit planner, arbitrary SQL, database connections,
+cross-dataset operations, persistent memory, RAG, MCP, or data mutation.
 
 ## Requirements and setup
 
@@ -34,6 +44,44 @@ Python 3.12 or newer is required.
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[test]'
 ```
+
+The interactive Agent supports OpenAI through the Responses API and DeepSeek
+through its OpenAI-compatible Chat Completions API. Both adapters use the
+official OpenAI Python SDK behind the provider-neutral `LLMClient` boundary.
+
+## LLM configuration
+
+Copy the tracked placeholder file, then edit the local ignored `.env`:
+
+```bash
+cp .env.example .env
+```
+
+The CLI loads `.env` once at startup with `override=False`, so an existing
+system environment variable always wins. `DATA_COPILOT_PROVIDER` and
+`DATA_COPILOT_MODEL` are required; unknown providers and missing selected-key
+configuration fail closed without falling back to another provider.
+
+For DeepSeek:
+
+```text
+DATA_COPILOT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your-real-local-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DATA_COPILOT_MODEL=deepseek-v4-flash
+```
+
+For OpenAI:
+
+```text
+DATA_COPILOT_PROVIDER=openai
+OPENAI_API_KEY=your-real-local-key
+DATA_COPILOT_MODEL=gpt-5.6-terra
+```
+
+Real keys belong only in the ignored local `.env` or external environment.
+They are never placed in prompts, Evidence, logs, Tool arguments, examples, or
+tests.
 
 ## Minimal usage
 
@@ -238,3 +286,93 @@ with `EvidenceLimitError`.
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+## Agent Tool loop
+
+Launch the minimal interactive CLI with one explicit local dataset:
+
+```bash
+data-copilot /path/to/orders.csv
+```
+
+The CLI registers only that file, prints public path-free metadata, and accepts
+questions until `exit`, `quit`, Ctrl+C, or Ctrl+D. A typical manual smoke test
+can ask:
+
+```text
+这个数据集有哪些字段？
+哪个地区的平均订单金额最高？
+每个月的销售额是多少？
+找出金额最高的 5 个 completed 订单。
+这个数据集有什么明显的数据质量问题？
+为什么三月份收入下降？
+```
+
+The Agent's initial model context contains only the system rules plus the
+current dataset's opaque ID, display name, and format. Schema, profiles, rows,
+aggregates, and quality facts enter the conversation only after an allowlisted
+Tool produces a typed result and that result passes through `EvidenceBuilder`
+and `EvidenceFormatter`.
+
+The six available functions are `inspect_dataset`, `profile_dataset`,
+`sample_dataset`, `filter_dataset`, `aggregate_dataset`, and
+`check_data_quality`. Their schemas intentionally omit dataset IDs, paths, SQL,
+and arbitrary expressions. The current dataset ID is bound inside
+`ToolDispatcher`; LLM arguments are untrusted and undergo Pydantic parsing plus
+all existing Tool and DuckDB validations.
+
+Each requested Tool call consumes one of `MAX_TOOL_ROUNDS = 5`, including
+rejected calls. OpenAI Responses parallel Tool calls are disabled; all returned
+Tool calls from either provider execute serially in the existing Agent loop.
+Tool errors are reduced to domain-safe messages so the model can recover,
+without receiving stack traces, paths, internal SQL, or provider details.
+Reaching the limit is an explicit failure, never success.
+
+The system prompt requires dataset-specific claims to be grounded in current
+Evidence, treats dataset text as data rather than instructions, and requires an
+insufficient-evidence answer instead of invented business causes. These prompt
+rules guide model behavior; capability enforcement, argument validation,
+resource limits, and the stopping condition remain deterministic Python code.
+
+Automated tests use `FakeLLMClient` or mocked provider SDK responses and never
+call a paid API. After configuring `.env`, run `data-copilot <dataset-path>` for
+an explicit real-provider smoke test.
+
+## Evaluation
+
+Phase 1.6 adds a small typed pipeline:
+
+```text
+EvalCase → DataCopilotAgent → Tool/Evidence transcript
+         → deterministic scoring + human-review flags → EvalResult
+```
+
+Run the free deterministic 20-case Mock Eval:
+
+```bash
+data-copilot-eval --mode mock
+```
+
+Live modes are explicit and may consume provider credits. Before calls begin,
+the CLI displays provider, model, and case count without showing the API key:
+
+```bash
+data-copilot-eval --mode live
+data-copilot-eval --mode safety
+```
+
+Generated JSON results are written under ignored `evals/results/`. They record
+Tool calls, rounds, total latency, optional provider token usage, Git state,
+deterministic failures, and human-review flags, but not configured keys,
+resolved paths, raw datasets, or internal SQL.
+
+The suite contains 15 functional/grounding/no-answer cases and five safety
+cases. Exact natural-language matching is deliberately avoided; deterministic
+checks use required facts, multilingual alternatives, forbidden claims, Tool
+selection, and Tool limits. Human review remains required where these checks
+cannot establish complete grounding.
+
+For an unfamiliar real dataset, keep the data local and follow the five-question
+protocol in `evals/real_data/README.md`. The current UCI Iris review and the
+DeepSeek baseline are recorded under `evals/real_data/` and `evals/baselines/`.
+See `evals/README.md` for the complete case and metric contract.
