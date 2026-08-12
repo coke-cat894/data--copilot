@@ -1,0 +1,23 @@
+version: 1
+type: glossary
+definitions:
+  - term_id: completed_order
+    term: Completed Order
+    definition: A synthetic order whose status is completed.
+    synonyms:
+      - fulfilled order
+    related_metrics:
+      - completed_revenue
+      - order_count
+  - term_id: revenue
+    term: Revenue
+    definition: Business value represented by the completed revenue metric.
+    synonyms:
+      - sales value
+    related_metrics:
+      - completed_revenue
+  - term_id: customer_region
+    term: Customer Region
+    definition: Geographic grouping used for synthetic customers.
+    related_dimensions:
+      - region

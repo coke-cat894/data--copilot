@@ -7,13 +7,12 @@ than prompt instructions.
 
 ## Current status
 
-Phase 2.6 — Real PostgreSQL + Eval + Safety Closure: **validated, closure not yet recommended**.
+Phase 3.1 — Semantic Catalog Foundation: **implemented as a standalone deterministic boundary**.
 
 Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged. Phase 2 now includes connection/registry, metadata discovery, SQL
-validation, bounded read execution, safe plan inspection, SQL debugging, and a
-real PostgreSQL evaluation path. The 2026-08-12 closure run retained 100% safety
-but exposed round-limit and no-answer reliability debt, so Phase 3 has not begun.
+unchanged and Phase 2 is frozen. Phase 3.1 adds trusted local semantic metadata;
+it does not connect semantics to either Agent, perform semantic retrieval, or
+start RAG.
 
 The current implementation:
 
@@ -40,11 +39,36 @@ The current implementation:
   read-only PostgreSQL AST policy; and
 - lets a single-database Agent discover declared schema metadata, generate
   PostgreSQL, execute bounded read queries, inspect estimated query plans, and
-  answer from Compact Evidence.
+  answer from Compact Evidence; and
+- loads explicitly configured, trusted local YAML into typed metric, dimension,
+  and glossary definitions with deterministic aliases, validated references,
+  and path-safe logical provenance.
 
 It does not include EXPLAIN ANALYZE, automatic SQL repair or optimization,
-database writes, cross-database queries, persistent memory, RAG, MCP, or
-connection pooling.
+database writes, cross-database queries, persistent memory, RAG, MCP, connection
+pooling, Agent semantic integration, fuzzy semantic matching, or metric-to-SQL
+compilation.
+
+## Semantic Catalog Foundation
+
+`SemanticCatalogLoader` accepts one explicit YAML file or one explicit
+directory. Directory loading is deterministic and non-recursive. Each trusted
+file declares `version: 1`, one `type` (`metrics`, `dimensions`, or `glossary`),
+and a `definitions` list. The loader does not discover database values or call
+an LLM.
+
+Metric definitions record business meaning and canonical
+`schema.table.column` inputs, not SQL. Dimensions record business meaning and
+source fields. Glossary terms may reference metric and dimension IDs. All three
+retain a program-created provenance pair containing only the source file name
+and definition ID.
+
+Catalog lookup supports stable IDs, canonical names, and explicitly configured
+synonyms using trim plus case-insensitive normalization. Duplicate IDs,
+canonical-name or synonym ambiguity, invalid cross-references, malformed files,
+unsupported fields (including SQL), and unsafe source forms fail closed. The
+catalog is currently a program-facing foundation only; no catalog content is
+added to system prompts.
 
 ## Requirements and setup
 

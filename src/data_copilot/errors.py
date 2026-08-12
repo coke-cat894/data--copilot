@@ -183,3 +183,19 @@ class AgentExecutionError(DataCopilotError):
 
 class AgentRoundLimitError(AgentExecutionError):
     """Raised when an Agent requests more than the allowed Tool calls."""
+
+
+class SemanticConfigurationError(ConfigurationError):
+    """Raised when trusted semantic configuration is malformed or inconsistent."""
+
+
+class SemanticNotFoundError(DataCopilotError):
+    """Raised when a semantic definition cannot be resolved."""
+
+
+class SemanticAmbiguityError(SemanticConfigurationError):
+    """Raised when one normalized semantic alias resolves to multiple definitions."""
+
+
+class SemanticReferenceError(SemanticConfigurationError):
+    """Raised when a semantic definition references an unknown definition ID."""

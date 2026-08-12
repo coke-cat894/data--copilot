@@ -1,0 +1,33 @@
+version: 1
+type: metrics
+definitions:
+  - metric_id: completed_revenue
+    name: completed revenue
+    display_name: Completed Revenue
+    description: Revenue represented by completed synthetic orders.
+    synonyms:
+      - fulfilled revenue
+    business_definition: >-
+      Revenue from completed orders, calculated conceptually as quantity
+      multiplied by unit price. This definition is metadata and is not executable.
+    required_fields:
+      - commerce.orders.status
+      - commerce.order_items.quantity
+      - commerce.order_items.unit_price
+    optional_filters:
+      - commerce.orders.created_at
+    owner: Synthetic Analytics
+    tags:
+      - synthetic
+      - revenue
+  - metric_id: order_count
+    name: order count
+    display_name: Order Count
+    description: Count of synthetic orders.
+    synonyms:
+      - number of orders
+    business_definition: The number of distinct synthetic order identifiers.
+    required_fields:
+      - commerce.orders.order_id
+    tags:
+      - synthetic

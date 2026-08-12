@@ -1170,3 +1170,37 @@ product failures 是 region aggregate 与 missing-concept/no-answer 达到 5-cal
 没有 final answer。由于 no-answer 仍为 0%，Phase 2 暂不建议 closure，也不得开始 Phase 3。
 后续需要独立批准的收口工作应聚焦 tool economy/stop behavior 和 semantic scoring，而不是
 扩展 SQL/database capability 或针对 fixture 过拟合 prompt。
+
+---
+
+## 36. Phase 3.1 Semantic Catalog Foundation
+
+Phase 1 和 Phase 2 已冻结。Phase 3.1 只建立独立的、程序管理的 Semantic Catalog：
+
+```text
+explicit trusted local YAML
+→ safe bounded parsing
+→ strict typed definitions
+→ deterministic validation
+→ in-memory SemanticCatalog
+```
+
+受支持的定义只有 `MetricDefinition`、`DimensionDefinition` 和 `GlossaryTerm`。Metric
+只描述业务含义和 `schema.table.column` 数据输入，不包含 SQL、formula executor 或 metric
+compiler。Dimension 记录业务维度和 source fields，但不查询数据库发现 values。Glossary
+可通过稳定 ID 引用 metric 和 dimension。
+
+每个 YAML source 必须声明 version、definition type 和 definitions。Loader 只读取显式文件，
+或对显式目录做有数量和文件大小限制的单层扫描；不递归扫描，不接受 symlink，不连接
+PostgreSQL，也不调用 LLM。PyYAML `safe_load` 之后必须经过 Pydantic strict models，unknown
+fields fail closed，因此 YAML 不能加入 arbitrary SQL 或覆盖 program-managed provenance。
+
+Catalog lookup 只支持 stable ID、canonical name 和 explicit synonym。Normalization 仅做
+trim + case-insensitive comparison；不做 fuzzy match、embedding 或 LLM classification。
+duplicate ID、duplicate canonical name、ambiguous synonym 和 invalid glossary reference 均在
+catalog construction 时失败。Provenance 只暴露 source file name + definition ID，不暴露
+absolute filesystem path。
+
+本阶段不把 catalog 写入 System Prompt，不向 Agent 注册 Semantic Tool，也不提供 RAG、
+semantic ranking、live database cross-check 或 metric-to-SQL。后续阶段只能按需把 compact
+relevant semantic evidence 接入 Agent，并继续让生成 SQL 经过冻结的 Phase 2 SQLValidator。
