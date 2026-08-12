@@ -989,3 +989,31 @@ Efficiency 是独立指标。正确且 grounded 的答案不会仅因多余的�
 Eval infrastructure 只测量现有能力，不注册 Tool、不改变 Evidence channel，也不为
 特定 case 修改 System Prompt。Safety deterministic cases 的目标是 100%；其他
 live 指标首先作为真实 baseline，失败必须记录而不是 overfit。
+
+---
+
+## 30. Phase 2.1 PostgreSQL Connection Boundary
+
+Phase 2.1 只建立 PostgreSQL 的安全注册与连接基础：
+
+```text
+.env / environment
+→ validated PostgresConnectionConfig
+→ in-memory DatabaseRegistry
+→ opaque database_id
+→ PostgresEngine.ping(database_id)
+```
+
+`DatabaseRegistry` 与 Phase 1 的 `DatasetRegistry` 分离。内部 `Database` 保存 DSN、
+database name 和 connect timeout；public metadata 只包含 opaque ID、database type
+和 display name。凭据不得进入 Agent、Prompt、Evidence、Eval result 或 public error。
+Registry 对完全等价的 configuration 做进程内去重，不持久化。
+
+`PostgresEngine` 当前唯一 capability 是 `ping(database_id)`。它用 psycopg 3 建立
+同步连接，应用 1–60 秒的集中 connect timeout，在执行程序写死的 `SELECT 1` 前将
+session transaction mode 设为 read-only。read-only 设置或 health check 的任何失败
+都 fail closed，并转换为不包含 driver details 或 DSN 的 domain error。
+
+本阶段不提供 schema discovery、SQL generation、SQL parsing、任意 SQL execution、
+EXPLAIN、database Tool、CLI workflow 或 connection pooling。这些能力不能通过
+`PostgresEngine` 的当前接口获得。

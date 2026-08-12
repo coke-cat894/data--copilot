@@ -156,5 +156,9 @@ def test_env_example_contains_only_documented_placeholders() -> None:
         "DEEPSEEK_BASE_URL=https://api.deepseek.com\n"
         "DATA_COPILOT_MODEL=deepseek-v4-flash\n\n"
         "# Optional OpenAI configuration\n"
-        "OPENAI_API_KEY=your_openai_api_key_here\n"
+        "OPENAI_API_KEY=your_openai_api_key_here\n\n"
+        "# Optional PostgreSQL configuration (Phase 2.1 connectivity only)\n"
+        "DATA_COPILOT_POSTGRES_DSN="
+        "postgresql://username:password@localhost:5432/database_name\n"
+        "POSTGRES_CONNECT_TIMEOUT_SECONDS=5\n"
     )

@@ -7,7 +7,21 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from data_copilot.errors import ConfigurationError
+from data_copilot.databases.constants import (
+    DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+    MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+    POSTGRES_CONNECT_TIMEOUT_ENV_VAR,
+    POSTGRES_DSN_ENV_VAR,
+)
+from data_copilot.databases.models import PostgresConnectionConfig
+from data_copilot.errors import ConfigurationError, DatabaseConfigurationError
+
+try:
+    from psycopg.conninfo import conninfo_to_dict
+    from psycopg.errors import ProgrammingError
+except ImportError:  # pragma: no cover - installation integrity guard
+    conninfo_to_dict = None
+    ProgrammingError = Exception
 
 MAX_PROFILE_COLUMNS = 50
 DEFAULT_TOP_VALUES = 10
@@ -97,8 +111,61 @@ def read_llm_config(
     )
 
 
+def read_postgres_config(
+    environ: Mapping[str, str] | None = None,
+) -> PostgresConnectionConfig:
+    """Read one PostgreSQL connection without exposing credentials in errors."""
+
+    values = os.environ if environ is None else environ
+    dsn = _required_database_value(values, POSTGRES_DSN_ENV_VAR)
+    timeout_value = values.get(
+        POSTGRES_CONNECT_TIMEOUT_ENV_VAR,
+        str(DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS),
+    ).strip()
+    try:
+        connect_timeout_seconds = int(timeout_value)
+    except ValueError:
+        raise DatabaseConfigurationError(
+            f"{POSTGRES_CONNECT_TIMEOUT_ENV_VAR} must be an integer."
+        ) from None
+    if not 1 <= connect_timeout_seconds <= MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS:
+        raise DatabaseConfigurationError(
+            f"{POSTGRES_CONNECT_TIMEOUT_ENV_VAR} must be between 1 and "
+            f"{MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS}."
+        )
+
+    if conninfo_to_dict is None:
+        raise DatabaseConfigurationError(
+            "The PostgreSQL driver is not installed."
+        )
+    try:
+        connection_parameters = conninfo_to_dict(dsn)
+    except (ProgrammingError, TypeError, ValueError):
+        raise DatabaseConfigurationError(
+            f"{POSTGRES_DSN_ENV_VAR} is invalid."
+        ) from None
+    database_name = connection_parameters.get("dbname", "").strip()
+    if not database_name:
+        raise DatabaseConfigurationError(
+            f"{POSTGRES_DSN_ENV_VAR} must include a database name."
+        )
+
+    return PostgresConnectionConfig(
+        dsn=dsn,
+        database_name=database_name,
+        connect_timeout_seconds=connect_timeout_seconds,
+    )
+
+
 def _required(values: Mapping[str, str], name: str) -> str:
     value = values.get(name)
     if value is None or not value.strip():
         raise ConfigurationError(f"{name} is not configured.")
+    return value.strip()
+
+
+def _required_database_value(values: Mapping[str, str], name: str) -> str:
+    value = values.get(name)
+    if value is None or not value.strip():
+        raise DatabaseConfigurationError(f"{name} is not configured.")
     return value.strip()

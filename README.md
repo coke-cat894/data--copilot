@@ -7,15 +7,11 @@ than prompt instructions.
 
 ## Current status
 
-Phase 1.6 — Eval + Safety + Real Dataset Test: **final closure patch
-implemented; post-patch focused live validation pending**.
+Phase 2.1 — PostgreSQL Connection + Registry: **implemented**.
 
-Phase 1 — Local Data Foundation is not yet marked complete. Deterministic
-regression, Mock Eval, live safety, and one unfamiliar real-data review are
-complete. The live baseline and focused rerun exposed Tool overuse and silent
-business-semantics assumptions; the final closure patch addresses those through
-general model guidance and Tool descriptions, but its live improvement has not
-yet been measured.
+Phase 1 — Local Data Foundation remains unchanged. Phase 2.1 adds only the
+program-side PostgreSQL configuration, opaque registry, and read-only health
+check boundary; it does not expose database capabilities to the Agent.
 
 The current implementation:
 
@@ -32,9 +28,14 @@ The current implementation:
 - converts all six Tool result types into bounded, path-free compact Evidence;
 - lets one LLM select only those six Tools through a static allowlist; and
 - returns grounded answers through a bounded in-process Agent loop and CLI.
+- registers one or more PostgreSQL connection configurations behind opaque,
+  process-local database IDs; and
+- verifies registered PostgreSQL connectivity with a fixed read-only health
+  check.
 
-It does not include an explicit planner, arbitrary SQL, database connections,
-cross-dataset operations, persistent memory, RAG, MCP, or data mutation.
+It does not include an explicit planner, arbitrary SQL, schema discovery,
+database query Tools, cross-dataset operations, persistent memory, RAG, MCP,
+or data mutation.
 
 ## Requirements and setup
 
@@ -82,6 +83,45 @@ DATA_COPILOT_MODEL=gpt-5.6-terra
 Real keys belong only in the ignored local `.env` or external environment.
 They are never placed in prompts, Evidence, logs, Tool arguments, examples, or
 tests.
+
+## PostgreSQL connection configuration
+
+Phase 2.1 uses psycopg 3 and reads PostgreSQL credentials only from the existing
+environment-loading boundary. Configure the ignored local `.env` or external
+environment:
+
+```text
+DATA_COPILOT_POSTGRES_DSN=postgresql://username:password@localhost:5432/database_name
+POSTGRES_CONNECT_TIMEOUT_SECONDS=5
+```
+
+The timeout defaults to 5 seconds and must be between 1 and 60 seconds. The DSN
+must include a database name. Parsed credentials remain in an internal frozen
+configuration model whose representation omits the DSN.
+
+The minimal program-side flow is:
+
+```python
+from data_copilot.config import load_environment, read_postgres_config
+from data_copilot.databases import DatabaseRegistry
+from data_copilot.execution import PostgresEngine
+
+load_environment()
+registry = DatabaseRegistry()
+database = registry.register(read_postgres_config(), display_name="Analytics")
+result = PostgresEngine(registry).ping(database.database_id)
+```
+
+`database.to_public_metadata()` exposes only `database_id`, `database_type`,
+and `display_name`. It omits the DSN, password, host, port, internal database
+name, and connection options. `PostgresEngine` accepts only `database_id` and
+has no generic SQL execution method.
+
+`ping()` connects synchronously with the configured timeout, sets the psycopg
+connection to read-only before querying, then executes the program-owned fixed
+`SELECT 1`. A connection or read-only setup failure returns a sanitized domain
+error and never falls back to read/write. Normal automated tests mock psycopg
+and do not require a live PostgreSQL server.
 
 ## Minimal usage
 

@@ -1,6 +1,10 @@
 """Bounded local data execution."""
 
 from data_copilot.execution.duckdb_engine import DuckDBEngine
+from data_copilot.execution.postgres_engine import (
+    PostgresEngine,
+    PostgresPingResult,
+)
 from data_copilot.execution.models import (
     BooleanColumnProfile,
     CategoricalColumnProfile,
@@ -50,6 +54,8 @@ __all__ = [
     "NumericColumnProfile",
     "OtherColumnProfile",
     "ProfileExecutionResult",
+    "PostgresEngine",
+    "PostgresPingResult",
     "QualityCheck",
     "QualityClassification",
     "TopValue",

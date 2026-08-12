@@ -89,6 +89,22 @@ class ConfigurationError(DataCopilotError):
     """Raised when explicit application configuration is missing or invalid."""
 
 
+class DatabaseConfigurationError(ConfigurationError):
+    """Raised when database configuration is missing or invalid."""
+
+
+class DatabaseNotFoundError(DataCopilotError):
+    """Raised when a database ID is not present in the current registry."""
+
+
+class DatabaseConnectionError(DataCopilotError):
+    """Raised when a registered database cannot be reached safely."""
+
+
+class UnsupportedDatabaseError(DataCopilotError):
+    """Raised when a database type is outside the explicit allowlist."""
+
+
 class ToolDispatchError(DataCopilotError):
     """Base class for rejected LLM-requested Tool calls."""
 
