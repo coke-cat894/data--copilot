@@ -211,3 +211,23 @@ class SemanticEvidenceBuildError(DataCopilotError):
 
 class SemanticEvidenceLimitError(SemanticEvidenceBuildError):
     """Raised when semantic evidence cannot fit its configured size limit."""
+
+
+class BusinessDocumentError(DataCopilotError):
+    """Base class for deterministic business-document boundary failures."""
+
+
+class BusinessDocumentConfigurationError(BusinessDocumentError):
+    """Raised when trusted document source configuration is invalid."""
+
+
+class BusinessDocumentLimitError(BusinessDocumentError):
+    """Raised when document loading, chunking, or retrieval exceeds a limit."""
+
+
+class DocumentEvidenceBuildError(BusinessDocumentError):
+    """Raised when typed retrieval results cannot become document evidence."""
+
+
+class DocumentEvidenceLimitError(DocumentEvidenceBuildError):
+    """Raised when document evidence cannot fit its configured size limit."""

@@ -1246,3 +1246,53 @@ DATA_EVIDENCE     = observed data/query facts
 instruction、Tool permission 或 executable SQL。本阶段不修改 Agent prompt，不注册 Agent
 Tool，不调用 LLM/PostgreSQL，不生成 SQL，也不开始 RAG、embedding、fuzzy search、live
 catalog consistency check 或 Phase 3 eval。
+
+---
+
+## 38. Phase 3.3 Minimal Business-document RAG
+
+Phase 3.3 在冻结的 structured Semantic Catalog 之外增加独立的 trusted document retrieval
+boundary：
+
+```text
+explicit local Markdown / text
+→ bounded path-safe loading
+→ deterministic heading / paragraph chunking
+→ bounded in-memory BM25-style lexical index
+→ top-k retrieval
+→ bounded DOCUMENT_EVIDENCE
+```
+
+`BusinessDocumentLoader` 只接受显式文件、显式文件列表或显式 non-recursive directory。
+支持 `.md`、`.markdown` 和 `.txt`；拒绝 symlink component、invalid UTF-8、empty document、
+duplicate logical source 以及 file count/bytes/chars limit。Public `BusinessDocument` 只保留
+content-derived stable ID、title、logical filename 和 program-managed content，不暴露 path。
+
+`BusinessDocumentChunker` 对 Markdown 使用 heading sections，对 plain text 使用 paragraphs，
+再以 character bound 做 deterministic split。每个 `DocumentChunk` 保留 content-derived
+chunk ID、document ID、title、heading、logical source、ordinal 和一致的 safe provenance。
+Document/chunk/collection limits 都由程序强制执行。
+
+`BusinessDocumentIndex` 是 startup-rebuildable in-memory local index，不持久化，也不连接
+external service。V1 使用 standard-library Unicode tokenization 和 BM25-style scoring；query、
+top_k 和 index chunks 有明确上限。只返回 positive lexical matches；相同 score 按 logical
+source、ordinal、chunk ID 稳定排序，不使用 embedding、fuzzy match、LLM rewrite 或 reranker。
+
+`DOCUMENT_EVIDENCE` 只包含 retrieved chunks，并限制 chunk count、chunk text、citation
+metadata 和 total serialized JSON chars。裁剪必须设置 `truncated` 和 warnings；total-size
+reduction 删除完整 trailing chunks，不切断 JSON。Citation foundation 只使用 document title、
+heading、logical source、ordinal、document/chunk IDs，不虚构 Markdown/text page number。
+
+三个 evidence channel 保持不同职责：
+
+```text
+SEMANTIC_EVIDENCE = authoritative structured business definitions
+DOCUMENT_EVIDENCE = retrieved explanatory business-document context
+DATA_EVIDENCE     = observed data/query facts
+```
+
+Document 是 trusted knowledge source，但 content 不是 control instruction。Prompt-like 或
+SQL-like text 只能原样成为 evidence content，不得执行、修改 Tool permission 或覆盖 system
+rules。本阶段不修改 Agent/Prompt，不注册 RAG Tool，不生成或执行 SQL，不调用 LLM、
+PostgreSQL、network 或 external API，也不提供 vector DB、embedding、PDF/DOCX、catalog
+conflict resolution、Phase 3 live eval 或 Phase 3.4 capability。

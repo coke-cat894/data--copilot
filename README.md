@@ -7,12 +7,12 @@ than prompt instructions.
 
 ## Current status
 
-Phase 3.2 — Semantic Resolution + Semantic Evidence: **implemented as a standalone deterministic boundary**.
+Phase 3.3 — Minimal Business-document RAG: **implemented as a standalone deterministic boundary**.
 
 Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged and Phase 2 and Phase 3.1 are frozen. Phase 3.2 resolves already
-extracted candidate terms and builds compact relevant business context; it does
-not connect semantics to either Agent or start RAG.
+unchanged, and Phase 2 through Phase 3.2 are frozen. Phase 3.3 retrieves bounded
+context from trusted local Markdown/text documents; it does not connect RAG or
+semantics to either Agent.
 
 The current implementation:
 
@@ -44,12 +44,16 @@ The current implementation:
   and glossary definitions with deterministic aliases, validated references,
   and path-safe logical provenance; and
 - resolves bounded candidate semantic terms across those definitions and builds
-  a separate, bounded `SEMANTIC_EVIDENCE` JSON envelope for relevant matches.
+  a separate, bounded `SEMANTIC_EVIDENCE` JSON envelope for relevant matches;
+  and
+- loads and chunks explicitly configured Markdown/text business documents,
+  searches them with a deterministic in-memory lexical index, and builds a
+  separate bounded `DOCUMENT_EVIDENCE` envelope from retrieved chunks.
 
 It does not include EXPLAIN ANALYZE, automatic SQL repair or optimization,
-database writes, cross-database queries, persistent memory, RAG, MCP, connection
-pooling, Agent semantic integration, fuzzy semantic matching, or metric-to-SQL
-compilation.
+database writes, cross-database queries, persistent memory, vector/external RAG,
+MCP, connection pooling, Agent semantic/RAG integration, fuzzy semantic
+matching, or metric-to-SQL compilation.
 
 ## Semantic Catalog Foundation
 
@@ -87,13 +91,40 @@ logical source-file and definition-ID provenance is retained.
 The channels remain separate:
 
 ```text
-SEMANTIC_EVIDENCE = trusted business meaning from relevant catalog definitions
+SEMANTIC_EVIDENCE = official structured business definitions
+DOCUMENT_EVIDENCE = retrieved business-document explanation and context
 DATA_EVIDENCE     = observed facts from bounded data or database execution
 ```
 
 Semantic evidence is content, not instructions or a capability grant. Phase
 3.2 does not place either channel into an Agent prompt, parse natural-language
 questions, generate SQL, execute SQL, or validate fields against PostgreSQL.
+
+## Minimal Business-document RAG
+
+`BusinessDocumentLoader` accepts only explicit `.md`, `.markdown`, and `.txt`
+files or explicit non-recursive directories. It rejects symlink components,
+unsupported explicit files, invalid UTF-8, empty documents, duplicate logical
+source names, and configured file/byte/character limits. Public models retain a
+content-derived document ID and safe filename only—never an absolute path.
+
+`BusinessDocumentChunker` uses Markdown headings and text paragraphs to produce
+deterministic bounded chunks with stable IDs, ordinals, titles, headings, and
+path-safe provenance. `BusinessDocumentIndex` builds a bounded in-memory
+BM25-style lexical index using only the Python standard library. Search accepts
+a plain bounded query and bounded `top_k`, returns only positive lexical
+matches, and uses logical source, ordinal, and chunk ID for stable tie-breaking.
+
+`DocumentEvidenceBuilder` preserves retrieval order and only includes retrieved
+chunks. It applies chunk-count, per-chunk text, citation metadata, and total JSON
+limits with explicit truncation warnings. `DocumentEvidenceFormatter` emits the
+distinct `DOCUMENT_EVIDENCE` prefix followed by compact deterministic JSON.
+Document text—including prompt-like or SQL-like text—remains inert evidence
+content and cannot grant permissions or execute anything.
+
+Phase 3.3 adds no embeddings, vector database, external API, persistent index,
+PDF/DOCX support, query rewriting, reranker, conflict resolution, Agent Tool, or
+Agent prompt integration.
 
 ## Requirements and setup
 

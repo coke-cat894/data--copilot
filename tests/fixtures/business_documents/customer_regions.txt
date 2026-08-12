@@ -1,0 +1,7 @@
+Customer Region Guidance
+
+Customer region is the geographic label assigned to the customer profile. It
+supports regional reporting and must not be inferred from an order's shipping
+notes when the profile value exists.
+
+Historical region changes retain the region active at the reporting cutoff.

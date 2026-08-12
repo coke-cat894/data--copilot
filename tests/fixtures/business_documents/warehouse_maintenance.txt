@@ -1,0 +1,5 @@
+Warehouse Maintenance Guide
+
+Conveyor belts are inspected every Tuesday. Spare rollers are stored beside the
+north loading bay. Maintenance tickets require an equipment identifier and an
+inspection timestamp.
