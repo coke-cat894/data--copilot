@@ -7,7 +7,7 @@ than prompt instructions.
 
 ## Current status
 
-Phase 1.3 — Sample + Filter + Aggregate: **completed**.
+Phase 1.4 — Data Quality + Compact Evidence: **completed**.
 
 The current implementation:
 
@@ -19,10 +19,12 @@ The current implementation:
   bounded DuckDB aggregates;
 - returns reproducible bounded random samples;
 - filters bounded rows through structured AND conditions; and
-- computes bounded whole-dataset, grouped, and calendar-grain aggregates.
+- computes bounded whole-dataset, grouped, and calendar-grain aggregates;
+- checks fixed objective and heuristic data-quality signals; and
+- converts all six Tool result types into bounded, path-free compact Evidence.
 
-It does not yet include an LLM, Agent loop, Evidence layer, arbitrary SQL,
-database connections, cross-dataset operations, or persistence.
+It does not yet include an LLM, Agent loop, planner, arbitrary SQL, database
+connections, cross-dataset operations, or persistence.
 
 ## Requirements and setup
 
@@ -39,9 +41,11 @@ python3.12 -m venv .venv
 from pathlib import Path
 
 from data_copilot.datasets import DatasetRegistry
+from data_copilot.evidence import EvidenceBuilder, EvidenceFormatter
 from data_copilot.tools import (
     AggregateDatasetTool,
     AggregateFunction,
+    CheckDataQualityTool,
     DimensionSpec,
     FilterCondition,
     FilterDatasetTool,
@@ -80,6 +84,10 @@ aggregated = AggregateDatasetTool(registry)(
     dimensions=[DimensionSpec("region_name", "region")],
     metrics=[MetricSpec("revenue", AggregateFunction.SUM, "amount")],
 )
+
+quality = CheckDataQualityTool(registry)(dataset.dataset_id)
+evidence = EvidenceBuilder().build(quality)
+formatted_evidence = EvidenceFormatter().format(evidence)
 ```
 
 `allowed_roots` is mandatory. Paths are resolved before registration, so a
@@ -163,6 +171,67 @@ query is issued.
 Explicit requests above these limits fail closed with `ResourceLimitError`.
 When sample/filter columns are omitted on a wider dataset, the first 50 columns
 are returned with a warning.
+
+## Data-quality contract
+
+`CheckDataQualityTool` accepts a `dataset_id`, optional source `columns`, and an
+optional timezone-aware `reference_time`. Its fixed checks are:
+
+- objective: null values, exact full-row duplicates beyond the first row,
+  all-null columns, and constant columns; and
+- heuristic: negative numeric values and DATE/TIMESTAMP values later than the
+  UTC reference time.
+
+Null, negative, and future-value rates use total dataset rows as the
+denominator. A column is constant only when it has more than one non-null value
+and exactly one distinct non-null value. Consequently, empty, all-null, and
+single-non-null-value columns are not reported as constant. Duplicate checking
+always uses the complete row, even when a subset of columns is selected for
+column checks.
+
+If `reference_time` is omitted, the Tool captures the current UTC time once.
+Tests and reproducible callers should inject a fixed timezone-aware value.
+`TIME` values are deliberately excluded because they have no date with which
+to establish "future" status. Heuristic findings are signals, not proof that
+the data is invalid.
+
+`MAX_QUALITY_COLUMNS = 50`. With no explicit selection, only the first 50
+columns are checked and a warning reports wider input. Explicit overflow,
+unknown or duplicate columns, empty selections, and naive reference times fail
+closed. Full-row duplicate checking is dataset-level and remains active.
+
+## Compact Evidence contract
+
+`EvidenceBuilder` accepts only the typed results of `inspect_dataset`,
+`profile_dataset`, `sample_dataset`, `filter_dataset`, `aggregate_dataset`, and
+`check_data_quality`. It performs no file reads, registry lookups, or data
+queries. Each returned `Evidence` has an opaque process-local `evidence_id`,
+`dataset_id`, operation, compact summary, columns/records, source and Evidence
+truncation flags, warnings, and count metadata.
+
+The source Tool result is the sole evidence boundary. Resolved paths and
+internal SQL are not copied into Evidence. Tabular rows are represented as
+values aligned to a single bounded `columns` list, avoiding repeated source
+column names. Prompt-like text, SQL-looking strings, and JSON-looking strings
+remain ordinary quoted data.
+
+`EvidenceFormatter` emits deterministic compact JSON prefixed with
+`DATA_EVIDENCE\n`. It never slices serialized JSON. Values are normalized as
+follows: strings remain strings, integers/floats/booleans/null remain native
+JSON values, decimals become strings, dates/times become ISO strings, and
+non-finite floats become null with a warning.
+
+Evidence applies limits independently of upstream Tool limits:
+
+- `MAX_EVIDENCE_ROWS = 100`
+- `MAX_EVIDENCE_COLUMNS = 30`
+- `MAX_CELL_CHARS = 1000`
+- `MAX_EVIDENCE_CHARS = 30000` (including the formatter prefix)
+
+Rows, columns, and cells are reduced structurally with explicit warnings. The
+total-size limit removes complete trailing records until valid JSON fits. If
+the metadata envelope alone cannot fit, building or formatting fails closed
+with `EvidenceLimitError`.
 
 ## Tests
 

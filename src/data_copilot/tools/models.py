@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 from data_copilot.datasets.models import DatasetFormat
 from data_copilot.execution.models import ColumnProfile
+from data_copilot.execution.quality_models import DataQualityIssue
 
 
 class ColumnSchema(BaseModel):
@@ -74,3 +75,17 @@ class AggregateDatasetResult(TabularResultBase):
     """Bounded grouped or whole-dataset aggregate rows."""
 
     truncated: bool
+
+
+class DataQualityResult(BaseModel):
+    """Public deterministic and heuristic data-quality observations."""
+
+    model_config = ConfigDict(frozen=True)
+
+    dataset_id: str
+    display_name: str
+    row_count: int
+    column_count: int
+    checked_column_count: int
+    issues: tuple[DataQualityIssue, ...]
+    warnings: tuple[str, ...] = ()

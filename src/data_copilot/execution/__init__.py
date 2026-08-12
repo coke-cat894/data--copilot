@@ -24,6 +24,12 @@ from data_copilot.execution.query_models import (
     SortSpec,
     TimeGrain,
 )
+from data_copilot.execution.quality_models import (
+    DataQualityExecutionResult,
+    DataQualityIssue,
+    QualityCheck,
+    QualityClassification,
+)
 
 __all__ = [
     "BooleanColumnProfile",
@@ -31,6 +37,8 @@ __all__ = [
     "AggregateSortSpec",
     "CategoricalColumnProfile",
     "ColumnMetadata",
+    "DataQualityExecutionResult",
+    "DataQualityIssue",
     "DatasetInspection",
     "DatetimeColumnProfile",
     "DuckDBEngine",
@@ -42,6 +50,8 @@ __all__ = [
     "NumericColumnProfile",
     "OtherColumnProfile",
     "ProfileExecutionResult",
+    "QualityCheck",
+    "QualityClassification",
     "TopValue",
     "SortDirection",
     "SortSpec",

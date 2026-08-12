@@ -17,12 +17,14 @@ from data_copilot.tools.inspect import InspectDatasetTool
 from data_copilot.tools.models import (
     AggregateDatasetResult,
     ColumnSchema,
+    DataQualityResult,
     FilterDatasetResult,
     InspectDatasetResult,
     ProfileDatasetResult,
     SampleDatasetResult,
 )
 from data_copilot.tools.profile import ProfileDatasetTool
+from data_copilot.tools.quality import CheckDataQualityTool
 from data_copilot.tools.sample import SampleDatasetTool
 
 __all__ = [
@@ -31,6 +33,8 @@ __all__ = [
     "AggregateFunction",
     "AggregateSortSpec",
     "ColumnSchema",
+    "CheckDataQualityTool",
+    "DataQualityResult",
     "DimensionSpec",
     "FilterCondition",
     "FilterDatasetResult",

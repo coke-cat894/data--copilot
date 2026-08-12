@@ -67,3 +67,15 @@ class InvalidMetricError(QueryBuildError):
 
 class InvalidDimensionError(QueryBuildError):
     """Raised when an aggregate dimension is invalid or incompatible."""
+
+
+class InvalidQualityRequestError(DataCopilotError):
+    """Raised when data-quality arguments are invalid or ambiguous."""
+
+
+class EvidenceBuildError(DataCopilotError):
+    """Raised when a typed Tool Result cannot be converted to evidence."""
+
+
+class EvidenceLimitError(EvidenceBuildError):
+    """Raised when valid structured evidence cannot fit the context limit."""

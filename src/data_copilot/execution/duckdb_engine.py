@@ -1,6 +1,7 @@
 """DuckDB-backed inspection for explicitly registered local datasets."""
 
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -10,6 +11,7 @@ from data_copilot.config import (
     DEFAULT_SAMPLE_ROWS,
     DEFAULT_TOP_VALUES,
     MAX_PROFILE_COLUMNS,
+    MAX_QUALITY_COLUMNS,
     MAX_TOP_VALUES,
 )
 from data_copilot.datasets.models import Dataset, DatasetFormat
@@ -19,6 +21,7 @@ from data_copilot.errors import (
     DataCopilotError,
     DatasetExecutionError,
     InvalidProfileRequestError,
+    InvalidQualityRequestError,
     ResourceLimitError,
 )
 from data_copilot.execution.models import (
@@ -50,10 +53,18 @@ from data_copilot.execution.query_models import (
     QueryExecutionResult,
     SortSpec,
 )
+from data_copilot.execution.quality_models import (
+    DataQualityExecutionResult,
+    DataQualityIssue,
+    QualityCheck,
+    QualityClassification,
+)
 from data_copilot.execution.type_system import classify_duckdb_type
 
 
 _PROFILE_VIEW_NAME = "_data_copilot_profile_source"
+_QUALITY_VIEW_NAME = "_data_copilot_quality_source"
+
 
 class DuckDBEngine:
     """Inspect registered datasets without exposing arbitrary SQL or paths."""
@@ -253,6 +264,65 @@ class DuckDBEngine:
         finally:
             connection.close()
 
+    def check_quality(
+        self,
+        dataset_id: str,
+        *,
+        columns: Sequence[str] | None = None,
+        reference_time: datetime,
+    ) -> DataQualityExecutionResult:
+        """Compute fixed objective checks and conservative heuristic signals."""
+
+        requested_columns = _validate_quality_request(columns, reference_time)
+        dataset = self._registry.get(dataset_id)
+        connection = duckdb.connect(database=":memory:")
+        try:
+            relation = self._scan(connection, dataset)
+            relation.create_view(_QUALITY_VIEW_NAME, replace=True)
+            schema = tuple(
+                zip(
+                    relation.columns,
+                    (str(duckdb_type) for duckdb_type in relation.types),
+                    strict=True,
+                )
+            )
+            selected_schema, warnings = _select_quality_columns(
+                schema, requested_columns
+            )
+            row = relation.aggregate("count(*) AS row_count").fetchone()
+            if row is None:
+                raise DatasetExecutionError("DuckDB returned no quality row count.")
+            row_count = int(row[0])
+            issues: list[DataQualityIssue] = []
+            duplicate_issue = _check_duplicate_rows(connection, row_count)
+            if duplicate_issue is not None:
+                issues.append(duplicate_issue)
+            for name, duckdb_type in selected_schema:
+                issues.extend(
+                    _check_column_quality(
+                        connection,
+                        name=name,
+                        duckdb_type=duckdb_type,
+                        row_count=row_count,
+                        reference_time=reference_time,
+                    )
+                )
+            return DataQualityExecutionResult(
+                row_count=row_count,
+                column_count=len(schema),
+                checked_column_count=len(selected_schema),
+                issues=tuple(issues),
+                warnings=warnings,
+            )
+        except DataCopilotError:
+            raise
+        except (duckdb.Error, OSError, TypeError, ValueError) as exc:
+            raise DatasetExecutionError(
+                f"DuckDB could not check dataset {dataset.dataset_id!r}."
+            ) from exc
+        finally:
+            connection.close()
+
     @staticmethod
     def _profile_column(
         connection: duckdb.DuckDBPyConnection,
@@ -356,6 +426,250 @@ def _select_profile_columns(
     return tuple(
         (column, types_by_name[column]) for column in requested_columns
     ), ()
+
+
+def _validate_quality_request(
+    columns: Sequence[str] | None, reference_time: datetime
+) -> tuple[str, ...] | None:
+    if not isinstance(reference_time, datetime) or reference_time.tzinfo is None:
+        raise InvalidQualityRequestError(
+            "reference_time must be a timezone-aware datetime."
+        )
+    if reference_time.utcoffset() is None:
+        raise InvalidQualityRequestError(
+            "reference_time must have a valid UTC offset."
+        )
+    if columns is None:
+        return None
+    if isinstance(columns, (str, bytes)):
+        raise InvalidQualityRequestError("columns must be a sequence of names.")
+    requested_columns = tuple(columns)
+    if not requested_columns:
+        raise InvalidQualityRequestError("columns cannot be empty when provided.")
+    if any(not isinstance(column, str) for column in requested_columns):
+        raise InvalidQualityRequestError(
+            "Every quality-check column must be a string."
+        )
+    if len(requested_columns) > MAX_QUALITY_COLUMNS:
+        raise ResourceLimitError(
+            f"Explicit request exceeds MAX_QUALITY_COLUMNS={MAX_QUALITY_COLUMNS}."
+        )
+    if len(set(requested_columns)) != len(requested_columns):
+        raise InvalidQualityRequestError(
+            "Duplicate quality-check columns are not allowed."
+        )
+    return requested_columns
+
+
+def _select_quality_columns(
+    schema: tuple[tuple[str, str], ...], requested_columns: tuple[str, ...] | None
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    if requested_columns is None:
+        selected_schema = schema[:MAX_QUALITY_COLUMNS]
+        if len(schema) <= MAX_QUALITY_COLUMNS:
+            return selected_schema, ()
+        warning = (
+            f"Dataset has {len(schema)} columns. {MAX_QUALITY_COLUMNS} columns were "
+            f"checked because MAX_QUALITY_COLUMNS={MAX_QUALITY_COLUMNS}."
+        )
+        return selected_schema, (warning,)
+    types_by_name = dict(schema)
+    missing_columns = [
+        column for column in requested_columns if column not in types_by_name
+    ]
+    if missing_columns:
+        missing = ", ".join(repr(column) for column in missing_columns)
+        raise ColumnNotFoundError(f"Unknown quality-check column(s): {missing}.")
+    return tuple(
+        (column, types_by_name[column]) for column in requested_columns
+    ), ()
+
+
+def _check_duplicate_rows(
+    connection: duckdb.DuckDBPyConnection, row_count: int
+) -> DataQualityIssue | None:
+    row = connection.execute(
+        f"""
+        SELECT COALESCE(sum(group_count - 1), 0)
+        FROM (
+            SELECT *, count(*) AS group_count
+            FROM {quote_identifier(_QUALITY_VIEW_NAME)}
+            GROUP BY ALL
+            HAVING count(*) > 1
+        ) duplicate_groups
+        """
+    ).fetchone()
+    if row is None:
+        raise DatasetExecutionError("DuckDB returned no duplicate-row result.")
+    duplicate_count = int(row[0])
+    if duplicate_count == 0:
+        return None
+    return DataQualityIssue(
+        check=QualityCheck.DUPLICATE_ROWS,
+        classification=QualityClassification.OBJECTIVE,
+        column=None,
+        count=duplicate_count,
+        rate=_null_rate(duplicate_count, row_count),
+        details={"semantics": "exact_full_row_duplicates_beyond_first"},
+    )
+
+
+def _check_column_quality(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    name: str,
+    duckdb_type: str,
+    row_count: int,
+    reference_time: datetime,
+) -> list[DataQualityIssue]:
+    column = quote_identifier(name)
+    view = quote_identifier(_QUALITY_VIEW_NAME)
+    row = connection.execute(
+        f"""
+        SELECT
+            count(*) - count({column}),
+            count({column}),
+            count(DISTINCT {column})
+        FROM {view}
+        """
+    ).fetchone()
+    if row is None:
+        raise DatasetExecutionError("DuckDB returned no column-quality result.")
+    null_count, non_null_count, distinct_count = (int(value) for value in row)
+    issues: list[DataQualityIssue] = []
+    if null_count > 0:
+        issues.append(
+            DataQualityIssue(
+                check=QualityCheck.NULL_VALUES,
+                classification=QualityClassification.OBJECTIVE,
+                column=name,
+                count=null_count,
+                rate=_null_rate(null_count, row_count),
+            )
+        )
+    if row_count > 0 and null_count == row_count:
+        issues.append(
+            DataQualityIssue(
+                check=QualityCheck.ALL_NULL_COLUMN,
+                classification=QualityClassification.OBJECTIVE,
+                column=name,
+                count=null_count,
+                rate=1.0,
+            )
+        )
+    if non_null_count > 1 and distinct_count == 1:
+        issues.append(
+            DataQualityIssue(
+                check=QualityCheck.CONSTANT_COLUMN,
+                classification=QualityClassification.OBJECTIVE,
+                column=name,
+                count=non_null_count,
+                rate=_null_rate(non_null_count, row_count),
+                details={"non_null_distinct_count": 1},
+            )
+        )
+
+    logical_type = classify_duckdb_type(duckdb_type)
+    if logical_type is LogicalColumnType.NUMERIC:
+        negative_issue = _check_negative_values(
+            connection, name=name, row_count=row_count
+        )
+        if negative_issue is not None:
+            issues.append(negative_issue)
+    if _supports_future_check(duckdb_type):
+        future_issue = _check_future_values(
+            connection,
+            name=name,
+            duckdb_type=duckdb_type,
+            row_count=row_count,
+            reference_time=reference_time,
+        )
+        if future_issue is not None:
+            issues.append(future_issue)
+    return issues
+
+
+def _check_negative_values(
+    connection: duckdb.DuckDBPyConnection, *, name: str, row_count: int
+) -> DataQualityIssue | None:
+    column = quote_identifier(name)
+    row = connection.execute(
+        f"""
+        SELECT
+            count(*) FILTER (WHERE {column} < 0),
+            min({column}) FILTER (WHERE {column} < 0)
+        FROM {quote_identifier(_QUALITY_VIEW_NAME)}
+        """
+    ).fetchone()
+    if row is None:
+        raise DatasetExecutionError("DuckDB returned no negative-value result.")
+    count = int(row[0])
+    if count == 0:
+        return None
+    return DataQualityIssue(
+        check=QualityCheck.NEGATIVE_NUMERIC_VALUES,
+        classification=QualityClassification.HEURISTIC,
+        column=name,
+        count=count,
+        rate=_null_rate(count, row_count),
+        details={"min_value": row[1]},
+    )
+
+
+def _supports_future_check(duckdb_type: str) -> bool:
+    normalized = duckdb_type.upper()
+    return normalized == "DATE" or normalized.startswith("TIMESTAMP")
+
+
+def _check_future_values(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    name: str,
+    duckdb_type: str,
+    row_count: int,
+    reference_time: datetime,
+) -> DataQualityIssue | None:
+    normalized_type = duckdb_type.upper()
+    reference_utc = reference_time.astimezone(timezone.utc)
+    if normalized_type == "DATE":
+        reference_value: object = reference_utc.date()
+        reference_expression = "?"
+    elif "WITH TIME ZONE" in normalized_type:
+        reference_value = reference_utc.isoformat()
+        reference_expression = "CAST(? AS TIMESTAMPTZ)"
+    else:
+        reference_value = reference_utc.replace(tzinfo=None)
+        reference_expression = "?"
+    column = quote_identifier(name)
+    max_expression = (
+        f"CAST(max({column}) AS VARCHAR)"
+        if "WITH TIME ZONE" in normalized_type
+        else f"max({column})"
+    )
+    row = connection.execute(
+        f"""
+        SELECT count(*) FILTER (WHERE {column} > {reference_expression}),
+               {max_expression}
+        FROM {quote_identifier(_QUALITY_VIEW_NAME)}
+        """,
+        [reference_value],
+    ).fetchone()
+    if row is None:
+        raise DatasetExecutionError("DuckDB returned no future-value result.")
+    count = int(row[0])
+    if count == 0:
+        return None
+    return DataQualityIssue(
+        check=QualityCheck.FUTURE_DATETIME_VALUES,
+        classification=QualityClassification.HEURISTIC,
+        column=name,
+        count=count,
+        rate=_null_rate(count, row_count),
+        details={
+            "max_value": row[1],
+            "reference_time": reference_utc,
+        },
+    )
 
 
 def _null_rate(null_count: int, row_count: int) -> float:
