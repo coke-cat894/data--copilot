@@ -16,9 +16,9 @@ JOIN pg_catalog.pg_namespace AS namespace
     ON namespace.oid = relation.relnamespace
 WHERE relation.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND namespace.nspname NOT LIKE 'pg_toast%'
-  AND namespace.nspname NOT LIKE 'pg_temp_%'
-  AND (%s IS NULL OR namespace.nspname = %s)
+  AND namespace.nspname NOT LIKE 'pg_toast%%'
+  AND namespace.nspname NOT LIKE 'pg_temp_%%'
+  AND (%s::text IS NULL OR namespace.nspname = %s)
 ORDER BY namespace.nspname, relation.relname
 LIMIT %s
 """

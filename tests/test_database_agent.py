@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from data_copilot import DatabaseCopilotAgent
+from data_copilot.config import MAX_TOOL_ROUNDS
 from data_copilot.databases import (
     ColumnMetadata,
     DatabaseQueryResult,
@@ -498,3 +499,244 @@ def test_explain_logging_records_counts_not_sql_or_plan(
     assert "truncated=False" in messages
     assert sql not in messages
     assert "Seq Scan" not in messages
+
+
+def test_database_tool_budget_remains_five_and_allows_one_final_synthesis(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    assert MAX_TOOL_ROUNDS == 5
+    agent, client, engine = _agent(
+        database_agent_context,
+        [
+            *(
+                _tool_call(
+                    "inspect_table",
+                    {"schema_name": "sales", "table_name": "orders"},
+                    call_id=f"inspect_{index}",
+                )
+                for index in range(5)
+            ),
+            LLMResponse(
+                text="Using the accumulated Evidence, the grounded total is 100."
+            ),
+        ],
+    )
+
+    result = agent.ask("Investigate and answer.")
+
+    assert result.tool_calls_used == 5
+    assert result.rounds == 6
+    assert len(client.requests) == 6
+    assert client.requests[-1][1] == ()
+    assert "final answer now" in (
+        client.requests[-1][0][-1].content or ""
+    ).casefold()
+    assert engine.inspect_table.call_count == 5
+
+
+def test_last_tool_budget_prioritizes_answer_producing_query(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    sql = (
+        "SELECT customer_id, SUM(amount) AS total FROM sales.orders "
+        "WHERE amount >= 10 GROUP BY customer_id"
+    )
+    agent, client, engine = _agent(
+        database_agent_context,
+        [
+            _tool_call("list_tables", {"schema": None}, call_id="list"),
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "sales", "table_name": "orders"},
+                call_id="inspect_orders",
+            ),
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "crm", "table_name": "customers"},
+                call_id="inspect_customers",
+            ),
+            _tool_call(
+                "get_relationships",
+                {"schema_name": "sales", "table_name": "orders"},
+                call_id="relationships",
+            ),
+            _tool_call("execute_read_query", {"sql": sql}, call_id="answer_query"),
+            LLMResponse(text="The grounded grouped total is available."),
+        ],
+    )
+
+    result = agent.ask(
+        "Using the supplied threshold 10, total order amount by customer."
+    )
+
+    fifth_request_messages = client.requests[4][0]
+    budget_control = fifth_request_messages[1].content or ""
+    assert "Tool calls remaining: 1" in budget_control
+    assert "directly produces the answer" in budget_control
+    assert "optional validation" in budget_control
+    assert not budget_control.startswith("DATA_EVIDENCE")
+    engine.execute_read_query.assert_called_once_with(database_agent_context[1], sql)
+    assert result.tool_calls_used == MAX_TOOL_ROUNDS
+
+
+def test_user_supplied_predicate_value_executes_without_enumeration(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    sql = "SELECT SUM(amount) AS total FROM sales.orders WHERE customer_id = 7"
+    agent, _, engine = _agent(
+        database_agent_context,
+        [
+            _tool_call("execute_read_query", {"sql": sql}),
+            LLMResponse(text="Customer 7 has grounded total 100."),
+        ],
+    )
+
+    agent.ask("Sum sales.orders.amount where the known customer_id equals 7.")
+
+    engine.execute_read_query.assert_called_once_with(database_agent_context[1], sql)
+    engine.list_tables.assert_not_called()
+    engine.inspect_table.assert_not_called()
+    engine.get_relationships.assert_not_called()
+
+
+def test_final_synthesis_tool_call_is_not_executed_and_fails_safe(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    agent, client, engine = _agent(
+        database_agent_context,
+        [
+            *(
+                _tool_call(
+                    "list_tables",
+                    {"schema": None},
+                    call_id=f"list_{index}",
+                )
+                for index in range(5)
+            ),
+            _tool_call(
+                "execute_read_query",
+                {"sql": "SELECT * FROM secret"},
+                call_id="forbidden_sixth",
+            ),
+        ],
+    )
+
+    result = agent.ask("Keep looking.")
+
+    assert client.requests[-1][1] == ()
+    assert result.tool_calls_used == 5
+    assert "insufficient" in result.answer
+    assert engine.list_tables.call_count == 5
+    engine.execute_read_query.assert_not_called()
+    assert all(
+        call.name != "execute_read_query"
+        for message in agent.messages
+        for call in message.tool_calls
+    )
+
+
+def test_final_synthesis_without_numerical_evidence_returns_insufficient_evidence(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    encoded_tool = (
+        "The required numerical result was never obtained, so the available "
+        "evidence is insufficient.\n\n"
+        '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="execute_read_query">'
+        "SELECT 999</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>"
+    )
+    agent, client, engine = _agent(
+        database_agent_context,
+        [
+            *(
+                _tool_call(
+                    "inspect_table",
+                    {"schema_name": "sales", "table_name": "orders"},
+                    call_id=f"inspect_{index}",
+                )
+                for index in range(5)
+            ),
+            LLMResponse(text=encoded_tool),
+        ],
+    )
+
+    result = agent.ask("What is the requested numerical result?")
+
+    final_instruction = client.requests[-1][0][-1].content or ""
+    assert "required numerical Evidence was never obtained" in final_instruction
+    assert "do not substitute a different concept" in final_instruction
+    assert "do not describe actions that can no longer be executed" in final_instruction
+    assert "evidence is insufficient" in result.answer
+    assert "DSML" not in result.answer
+    assert "999" not in result.answer
+    engine.execute_read_query.assert_not_called()
+
+
+def test_missing_concept_metadata_stops_with_explicit_no_answer(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    engine = database_agent_context[2]
+    engine.inspect_table.return_value = TableInspectionResult(
+        schema_name="analytics",
+        table_name="facts",
+        table_type=TableType.TABLE,
+        columns=(
+            ColumnMetadata(
+                name="available_group", postgres_type="text", nullable=True
+            ),
+            ColumnMetadata(
+                name="gross_measure", postgres_type="numeric", nullable=True
+            ),
+        ),
+        primary_key=(),
+        foreign_keys=(),
+        basic_indexes=(),
+        truncated=False,
+    )
+    agent, _, engine = _agent(
+        database_agent_context,
+        [
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "analytics", "table_name": "facts"},
+            ),
+            LLMResponse(
+                text=(
+                    "The requested_group dimension and net_measure derivation "
+                    "input are absent. available_group is semantically different "
+                    "and cannot replace requested_group, so there is insufficient "
+                    "evidence to answer the original question."
+                )
+            ),
+        ],
+    )
+
+    result = agent.ask("Which requested_group has the highest net_measure?")
+
+    assert "insufficient evidence" in result.answer
+    assert "semantically different" in result.answer
+    assert "cannot replace" in result.answer
+    assert engine.inspect_table.call_count == 1
+    engine.list_tables.assert_not_called()
+    engine.execute_read_query.assert_not_called()
+
+
+def test_existing_metadata_is_reused_without_identical_probe(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    sql = "SELECT SUM(amount) AS total FROM sales.orders"
+    agent, _, engine = _agent(
+        database_agent_context,
+        [
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "sales", "table_name": "orders"},
+            ),
+            _tool_call("execute_read_query", {"sql": sql}),
+            LLMResponse(text="The total is 100."),
+        ],
+    )
+
+    agent.ask("Use the schema once, then calculate total amount.")
+
+    engine.inspect_table.assert_called_once()
+    engine.execute_read_query.assert_called_once_with(database_agent_context[1], sql)

@@ -5,12 +5,18 @@ import logging
 from importlib.resources import files
 from time import perf_counter
 
-from data_copilot.agent import AgentResult, _safe_tool_error
+from data_copilot.agent import (
+    AgentResult,
+    _FINAL_SYNTHESIS_FALLBACK,
+    _FINAL_SYNTHESIS_INSTRUCTION,
+    _final_synthesis_answer,
+    _messages_with_tool_budget,
+    _safe_tool_error,
+)
 from data_copilot.config import MAX_TOOL_ROUNDS
 from data_copilot.databases import DatabaseRegistry
 from data_copilot.errors import (
     AgentExecutionError,
-    AgentRoundLimitError,
     DataCopilotError,
     LLMClientError,
 )
@@ -73,16 +79,19 @@ class DatabaseCopilotAgent:
         usage: LLMUsage | None = None
 
         while True:
-            response = self._complete()
+            response = self._complete(
+                tool_calls_remaining=self._max_tool_rounds - tool_calls_used
+            )
             if response.usage is not None:
                 usage = response.usage if usage is None else usage + response.usage
             rounds += 1
             if response.tool_calls:
                 requested_count = len(response.tool_calls)
                 if tool_calls_used + requested_count > self._max_tool_rounds:
-                    raise AgentRoundLimitError(
-                        "The Agent reached MAX_TOOL_ROUNDS="
-                        f"{self._max_tool_rounds} before producing a final answer."
+                    return self._final_synthesis(
+                        tool_calls_used=tool_calls_used,
+                        rounds=rounds,
+                        usage=usage,
                     )
                 self._messages.append(
                     LLMMessage(
@@ -99,6 +108,12 @@ class DatabaseCopilotAgent:
                         tool_call.arguments,
                         tool_calls_used,
                     )
+                if tool_calls_used == self._max_tool_rounds:
+                    return self._final_synthesis(
+                        tool_calls_used=tool_calls_used,
+                        rounds=rounds,
+                        usage=usage,
+                    )
                 continue
 
             answer = (response.text or "").strip()
@@ -114,15 +129,48 @@ class DatabaseCopilotAgent:
                 usage=usage,
             )
 
-    def _complete(self) -> LLMResponse:
+    def _complete(self, *, tool_calls_remaining: int) -> LLMResponse:
+        messages = _messages_with_tool_budget(
+            self._messages, tool_calls_remaining=tool_calls_remaining
+        )
         try:
             return self._llm_client.complete(
-                self._messages, self._dispatcher.schemas
+                messages, self._dispatcher.schemas
             )
         except LLMClientError:
             raise
         except Exception as exc:
             raise LLMClientError("The LLM client failed safely.") from exc
+
+    def _final_synthesis(
+        self,
+        *,
+        tool_calls_used: int,
+        rounds: int,
+        usage: LLMUsage | None,
+    ) -> AgentResult:
+        self._messages.append(
+            LLMMessage(role=LLMRole.SYSTEM, content=_FINAL_SYNTHESIS_INSTRUCTION)
+        )
+        messages = _messages_with_tool_budget(
+            self._messages, tool_calls_remaining=0
+        )
+        try:
+            response = self._llm_client.complete(messages, ())
+        except LLMClientError:
+            raise
+        except Exception as exc:
+            raise LLMClientError("The LLM client failed safely.") from exc
+        if response.usage is not None:
+            usage = response.usage if usage is None else usage + response.usage
+        answer = _final_synthesis_answer(response)
+        self._messages.append(LLMMessage(role=LLMRole.ASSISTANT, content=answer))
+        return AgentResult(
+            answer=answer,
+            tool_calls_used=tool_calls_used,
+            rounds=rounds + 1,
+            usage=usage,
+        )
 
     def _execute_tool_call(
         self,

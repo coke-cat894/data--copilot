@@ -445,3 +445,27 @@ def test_fake_client_records_snapshots_and_fails_when_exhausted() -> None:
     assert client.requests[0][0] == messages
     with pytest.raises(LLMClientError, match="no scripted"):
         client.complete(messages, (_tool_definition(),))
+
+
+def test_provider_clients_omit_tool_configuration_when_tools_are_disabled() -> None:
+    openai_responses = FakeResponses(
+        [SimpleNamespace(output=[], output_text="Final synthesis")]
+    )
+    deepseek_completions = FakeChatCompletions(
+        [_chat_response(content="Final synthesis")]
+    )
+    messages = (LLMMessage(role=LLMRole.USER, content="finalize"),)
+
+    OpenAILLMClient(
+        model="test-model", sdk_client=_sdk(openai_responses)
+    ).complete(messages, ())
+    DeepSeekLLMClient(
+        model="deepseek-v4-flash",
+        sdk_client=_chat_sdk(deepseek_completions),
+    ).complete(messages, ())
+
+    assert "tools" not in openai_responses.requests[0]
+    assert "tool_choice" not in openai_responses.requests[0]
+    assert "parallel_tool_calls" not in openai_responses.requests[0]
+    assert "tools" not in deepseek_completions.requests[0]
+    assert "tool_choice" not in deepseek_completions.requests[0]

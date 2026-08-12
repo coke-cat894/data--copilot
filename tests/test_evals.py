@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -8,6 +9,7 @@ from data_copilot.evals.loader import EvalLoadError, load_cases
 from data_copilot.evals.models import EvalCase, EvalCategory
 from data_copilot.evals.scoring import score_case
 from data_copilot.evals.runner import (
+    DatabaseEvalRunner,
     EvalPersistenceError,
     EvalRunner,
     format_summary,
@@ -19,6 +21,8 @@ from data_copilot.llm import (
     LLMToolCall,
     LLMUsage,
 )
+from data_copilot.databases import DatabaseRegistry, PostgresConnectionConfig
+from data_copilot.execution import PostgresEngine
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -52,6 +56,22 @@ def test_case_loader_reads_twenty_cases_and_rejects_duplicate_ids(
     duplicate.write_text(f"{encoded}\n{encoded}\n", encoding="utf-8")
     with pytest.raises(EvalLoadError, match="duplicate"):
         load_cases(duplicate)
+
+
+def test_database_case_loader_reads_twelve_distinct_cases() -> None:
+    cases = load_cases(PROJECT_ROOT / "evals/cases/database_phase_2.jsonl")
+
+    assert len(cases) == 12
+    assert sum(case.category is EvalCategory.SAFETY for case in cases) == 2
+    assert all(case.database == "data_copilot_test" for case in cases)
+    assert all(case.dataset is None for case in cases)
+
+
+def test_eval_case_requires_exactly_one_source() -> None:
+    with pytest.raises(ValueError, match="exactly one source"):
+        _case(dataset=None)
+    with pytest.raises(ValueError, match="exactly one source"):
+        _case(database="db", dataset="tests/fixtures/orders_demo.csv")
 
 
 def test_eval_runner_uses_agent_collects_trace_usage_and_summary() -> None:
@@ -95,6 +115,39 @@ def test_eval_runner_uses_agent_collects_trace_usage_and_summary() -> None:
     assert run.summary.task_success_rate == 1.0
     assert run.summary.total_tokens == 45
     assert "Cases: 1" in format_summary(run)
+
+
+def test_database_eval_runner_uses_database_agent_without_exposing_database_id() -> None:
+    registry = DatabaseRegistry()
+    database = registry.register(
+        PostgresConnectionConfig(
+            "postgresql://user:fake-secret@localhost/data_copilot_test",
+            "data_copilot_test",
+            5,
+        )
+    )
+    case = _case(
+        dataset=None,
+        database="data_copilot_test",
+        question="What does SELECT 1 do?",
+        expected_tools=(),
+        expected_values=(),
+        answer_requirements=("one",),
+    )
+    runner = DatabaseEvalRunner(
+        registry=registry,
+        database_id=database.database_id,
+        client_factory=lambda _case: FakeLLMClient(
+            [LLMResponse(text="It selects the constant one.")]
+        ),
+        engine=MagicMock(spec=PostgresEngine),
+    )
+
+    result = runner.run_case(case)
+
+    assert result.passed is True
+    assert result.actual_tools == ()
+    assert "fake-secret" not in result.model_dump_json()
 
 
 def test_eval_runner_reports_failures_without_exact_answer_matching() -> None:
@@ -333,3 +386,110 @@ def test_safety_metric_is_not_conflated_with_read_only_tool_efficiency() -> None
     assert run.summary.task_success_rate == 1.0
     assert run.summary.safety_pass_rate == 1.0
     assert run.summary.efficiency_accuracy == 0.0
+
+
+def _database_case(case_id: str) -> EvalCase:
+    return next(
+        case
+        for case in load_cases(
+            PROJECT_ROOT / "evals/cases/database_phase_2.jsonl"
+        )
+        if case.case_id == case_id
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (
+            "This is a one-to-many relationship: each parent order can match "
+            "multiple child item rows, so one parent produces multiple output "
+            "rows. That is expected relational behavior, not a database bug."
+        ),
+        (
+            "这是正常的一对多连接：每个订单会匹配多条子记录，因此父记录在结果中"
+            "重复并使行数增加。这是预期结果，不是数据库 bug。"
+        ),
+    ],
+)
+def test_join_semantic_scorer_accepts_grounded_equivalent_wording(
+    answer: str,
+) -> None:
+    checks, failures = score_case(
+        _database_case("db_join_multiplication"),
+        answer,
+        ("get_relationships",),
+    )
+
+    assert checks.answer_requirements is True
+    assert checks.forbidden_claims is True
+    assert failures == ()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (
+            "The query plan shows a Hash Join and Aggregate with estimated rows "
+            "and total cost. Those are observable facts; if the inputs grow they "
+            "may contribute to cost, but the plan does not prove a root cause."
+        ),
+        (
+            "查询计划显示顺序扫描、哈希连接和聚合成本。这些是可观察事实；如果表变大，"
+            "它们可能增加代价，但不能证明这是确定根因。"
+        ),
+    ],
+)
+def test_explain_semantic_scorer_accepts_grounded_equivalent_wording(
+    answer: str,
+) -> None:
+    checks, failures = score_case(
+        _database_case("db_explain_performance"),
+        answer,
+        ("explain_query",),
+    )
+
+    assert checks.answer_requirements is True
+    assert checks.forbidden_claims is True
+    assert failures == ()
+
+
+def test_explain_unsupported_definitive_cause_still_fails_grounding() -> None:
+    checks, failures = score_case(
+        _database_case("db_explain_performance"),
+        (
+            "The query plan shows a Hash Join and total cost, which may matter if "
+            "the table grows. The definitive root cause is missing indexes."
+        ),
+        ("explain_query",),
+    )
+
+    assert checks.answer_requirements is True
+    assert checks.forbidden_claims is False
+    assert "Failed deterministic check: forbidden_claims." in failures
+
+
+def test_semantic_scorer_accepts_first_live_grounded_wording() -> None:
+    join_answer = (
+        "两者是一对多关系，每个订单可能有多个明细项，JOIN 会展开成多行。"
+        "这不是数据库 bug，而是关系型数据库 JOIN 的预期语义。"
+    )
+    explain_answer = (
+        "The plan evidence shows an Aggregate, Hash Join, Seq Scan, estimated "
+        "rows and total cost. 如果表较大这些节点可能贡献成本；性能优化只是推测，"
+        "需要进一步验证，不能证明确定根因。"
+    )
+
+    join_checks, _ = score_case(
+        _database_case("db_join_multiplication"),
+        join_answer,
+        ("get_relationships",),
+    )
+    explain_checks, _ = score_case(
+        _database_case("db_explain_performance"),
+        explain_answer,
+        ("explain_query",),
+    )
+
+    assert join_checks.answer_requirements is True
+    assert explain_checks.answer_requirements is True

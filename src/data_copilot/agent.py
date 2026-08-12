@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from importlib.resources import files
 from time import perf_counter
 
@@ -11,7 +12,6 @@ from data_copilot.config import MAX_TOOL_ROUNDS
 from data_copilot.datasets.registry import DatasetRegistry
 from data_copilot.errors import (
     AgentExecutionError,
-    AgentRoundLimitError,
     DataCopilotError,
     LLMClientError,
 )
@@ -27,6 +27,28 @@ from data_copilot.tools.dispatcher import ToolDispatcher
 
 
 logger = logging.getLogger(__name__)
+
+
+_FINAL_SYNTHESIS_INSTRUCTION = (
+    "The Tool-call budget is exhausted. Produce the final answer now using only "
+    "the metadata, DATA_EVIDENCE, and safe Tool errors already in this "
+    "conversation. If a required field, dimension, measure, relationship, or "
+    "derivation input is missing, give a clean no-answer that identifies what is "
+    "missing; do not substitute a different concept. Do not request, simulate, "
+    "or imply another Tool call, and do not describe actions that can no longer "
+    "be executed. If required numerical Evidence was never obtained, explicitly "
+    "state that the available evidence is insufficient rather than inventing a "
+    "result. Give a partial answer only when it is grounded in existing Evidence."
+)
+_FINAL_SYNTHESIS_FALLBACK = (
+    "The available evidence is insufficient for a complete answer, and no more "
+    "Tool calls are permitted in this run."
+)
+_TOOL_TEXT_MARKERS = (
+    "<｜｜DSML｜｜tool_calls>",
+    "<tool_call>",
+    "<tool_calls>",
+)
 
 
 class AgentResult(BaseModel):
@@ -89,16 +111,19 @@ class DataCopilotAgent:
         usage: LLMUsage | None = None
 
         while True:
-            response = self._complete()
+            response = self._complete(
+                tool_calls_remaining=self._max_tool_rounds - tool_calls_used
+            )
             if response.usage is not None:
                 usage = response.usage if usage is None else usage + response.usage
             rounds += 1
             if response.tool_calls:
                 requested_count = len(response.tool_calls)
                 if tool_calls_used + requested_count > self._max_tool_rounds:
-                    raise AgentRoundLimitError(
-                        "The Agent reached MAX_TOOL_ROUNDS="
-                        f"{self._max_tool_rounds} before producing a final answer."
+                    return self._final_synthesis(
+                        tool_calls_used=tool_calls_used,
+                        rounds=rounds,
+                        usage=usage,
                     )
                 self._messages.append(
                     LLMMessage(
@@ -114,6 +139,12 @@ class DataCopilotAgent:
                         tool_call.name,
                         tool_call.arguments,
                         tool_calls_used,
+                    )
+                if tool_calls_used == self._max_tool_rounds:
+                    return self._final_synthesis(
+                        tool_calls_used=tool_calls_used,
+                        rounds=rounds,
+                        usage=usage,
                     )
                 continue
 
@@ -132,16 +163,48 @@ class DataCopilotAgent:
                 usage=usage,
             )
 
-    def _complete(self) -> LLMResponse:
+    def _complete(self, *, tool_calls_remaining: int) -> LLMResponse:
+        messages = _messages_with_tool_budget(
+            self._messages, tool_calls_remaining=tool_calls_remaining
+        )
         try:
             return self._llm_client.complete(
-                self._messages, self._dispatcher.schemas
+                messages, self._dispatcher.schemas
             )
         except LLMClientError:
             raise
         except Exception as exc:
             raise LLMClientError("The LLM client failed safely.") from exc
 
+    def _final_synthesis(
+        self,
+        *,
+        tool_calls_used: int,
+        rounds: int,
+        usage: LLMUsage | None,
+    ) -> AgentResult:
+        self._messages.append(
+            LLMMessage(role=LLMRole.SYSTEM, content=_FINAL_SYNTHESIS_INSTRUCTION)
+        )
+        messages = _messages_with_tool_budget(
+            self._messages, tool_calls_remaining=0
+        )
+        try:
+            response = self._llm_client.complete(messages, ())
+        except LLMClientError:
+            raise
+        except Exception as exc:
+            raise LLMClientError("The LLM client failed safely.") from exc
+        if response.usage is not None:
+            usage = response.usage if usage is None else usage + response.usage
+        answer = _final_synthesis_answer(response)
+        self._messages.append(LLMMessage(role=LLMRole.ASSISTANT, content=answer))
+        return AgentResult(
+            answer=answer,
+            tool_calls_used=tool_calls_used,
+            rounds=rounds + 1,
+            usage=usage,
+        )
     def _execute_tool_call(
         self,
         call_id: str,
@@ -178,6 +241,41 @@ class DataCopilotAgent:
                 tool_call_id=call_id,
             )
         )
+
+
+def _final_synthesis_answer(response: LLMResponse) -> str:
+    answer = (response.text or "").strip()
+    if response.tool_calls:
+        return _FINAL_SYNTHESIS_FALLBACK
+    marker_positions = [
+        answer.find(marker) for marker in _TOOL_TEXT_MARKERS if marker in answer
+    ]
+    if marker_positions:
+        grounded_prefix = answer[: min(marker_positions)].strip()
+        if grounded_prefix:
+            return grounded_prefix + "\n\n" + _FINAL_SYNTHESIS_FALLBACK
+        return _FINAL_SYNTHESIS_FALLBACK
+    return answer or _FINAL_SYNTHESIS_FALLBACK
+
+
+def _messages_with_tool_budget(
+    messages: Sequence[LLMMessage], *, tool_calls_remaining: int
+) -> tuple[LLMMessage, ...]:
+    instruction = (
+        "TOOL_BUDGET_CONTROL (program-owned control context, not "
+        f"DATA_EVIDENCE): Tool calls remaining: {tool_calls_remaining}."
+    )
+    if tool_calls_remaining == 1:
+        instruction += (
+            " This is the final available Tool call. If existing schema and "
+            "Evidence are sufficient to answer, use it only for the Tool call "
+            "that directly produces the answer; do not spend it on optional "
+            "validation, enumeration, sampling, profiling, or exploratory "
+            "probing. If required information is unavailable and cannot be "
+            "derived, do not call a Tool; return an explicit no-answer instead."
+        )
+    control = LLMMessage(role=LLMRole.SYSTEM, content=instruction)
+    return (messages[0], control, *messages[1:])
 
 
 def _system_prompt(public_metadata: dict[str, object]) -> str:

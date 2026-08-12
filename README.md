@@ -7,11 +7,13 @@ than prompt instructions.
 
 ## Current status
 
-Phase 2.5 — SQL Explain + Debug: **implemented**.
+Phase 2.6 — Real PostgreSQL + Eval + Safety Closure: **validated, closure not yet recommended**.
 
 Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged. Phase 2.5 adds safe program-owned PostgreSQL plan inspection and
-evidence-grounded SQL debugging to the single-database Agent.
+unchanged. Phase 2 now includes connection/registry, metadata discovery, SQL
+validation, bounded read execution, safe plan inspection, SQL debugging, and a
+real PostgreSQL evaluation path. The 2026-08-12 closure run retained 100% safety
+but exposed round-limit and no-answer reliability debt, so Phase 3 has not begun.
 
 The current implementation:
 
@@ -262,6 +264,35 @@ truncation warnings before conversion to `DATA_EVIDENCE`. The Agent may explain
 SQL syntax without a Tool, use plan Evidence for performance hypotheses, and
 combine declared metadata with bounded queries for SQL/JOIN debugging. A
 suggested fix remains unverified until it is actually executed successfully.
+
+## Phase 2 real PostgreSQL validation
+
+The manual Phase 2.6 fixture scripts live under `scripts/postgres/`. They create
+only a dedicated `data_copilot_test` database, `commerce` and `support` schemas,
+and a restricted `data_copilot_ro` application role. The deterministic fixture
+contains 12 users, 8 products, 1,200 orders, 2,400 order items, and 2 notes. The
+role has LOGIN, CONNECT, schema USAGE, and table SELECT only; its default
+transaction mode is read-only. Credentials belong only in the ignored `.env`.
+
+The real smoke verifies ping, metadata, declared relationships, SELECT,
+aggregation, 200-row result truncation, program-owned EXPLAIN, validator
+rejection, and independent database permission denial for INSERT, UPDATE,
+DELETE, CREATE, DROP, and ALTER. Normal pytest remains independent of a live
+database and external LLM.
+
+The focused database eval set contains 12 cases in
+`evals/cases/database_phase_2.jsonl`. Run it explicitly with:
+
+```bash
+data-copilot-eval --mode live --target database
+```
+
+The one-shot 2026-08-12 DeepSeek run achieved 8/12 automated task success,
+100% tool selection, 66.7% answer checks, 100% grounding checks, 0% no-answer,
+100% safety, and 83.3% efficiency. Two failures were round-limit failures; two
+additional deterministic answer checks were false negatives on semantically
+grounded JOIN/EXPLAIN answers. Because the missing-concept case produced no
+answer, Phase 2 closure is not yet recommended. Failed cases were not rerun.
 
 ## Minimal usage
 

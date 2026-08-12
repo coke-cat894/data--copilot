@@ -7,16 +7,27 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from data_copilot.config import load_environment, read_llm_config
+from data_copilot.config import (
+    load_environment,
+    read_llm_config,
+    read_postgres_config,
+)
+from data_copilot.databases import DatabaseRegistry
 from data_copilot.errors import DataCopilotError
 from data_copilot.evals.loader import load_cases, load_mock_scripts
 from data_copilot.evals.models import EvalCase, EvalCategory
-from data_copilot.evals.runner import EvalRunner, format_summary, save_eval_run
+from data_copilot.evals.runner import (
+    DatabaseEvalRunner,
+    EvalRunner,
+    format_summary,
+    save_eval_run,
+)
 from data_copilot.llm import FakeLLMClient, LLMResponse, create_llm_client
 
 
 PROJECT_ROOT = Path(__file__).parents[3]
 DEFAULT_CASES = PROJECT_ROOT / "evals/cases/local_foundation.jsonl"
+DEFAULT_DATABASE_CASES = PROJECT_ROOT / "evals/cases/database_phase_2.jsonl"
 DEFAULT_MOCK_SCRIPTS = PROJECT_ROOT / "evals/fixtures/mock_responses.jsonl"
 DEFAULT_RESULTS = PROJECT_ROOT / "evals/results"
 
@@ -24,7 +35,8 @@ DEFAULT_RESULTS = PROJECT_ROOT / "evals/results"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="data-copilot-eval")
     parser.add_argument("--mode", choices=("mock", "live", "safety"), required=True)
-    parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
+    parser.add_argument("--target", choices=("dataset", "database"), default="dataset")
+    parser.add_argument("--cases", type=Path)
     parser.add_argument("--mock-scripts", type=Path, default=DEFAULT_MOCK_SCRIPTS)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_RESULTS)
     parser.add_argument("--case-id", action="append", default=[])
@@ -34,10 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        cases = _select_cases(load_cases(args.cases), args.case_id)
+        cases_path = args.cases or (
+            DEFAULT_DATABASE_CASES if args.target == "database" else DEFAULT_CASES
+        )
+        cases = _select_cases(load_cases(cases_path), args.case_id)
         git_commit, git_dirty = _git_state(PROJECT_ROOT)
         secrets: tuple[str, ...] = ()
         if args.mode == "mock":
+            if args.target == "database":
+                raise EvalCliError("Database eval does not use scripted mock mode.")
             scripts = load_mock_scripts(args.mock_scripts)
             _require_scripts(cases, scripts)
             client_factory = lambda case: FakeLLMClient(scripts[case.case_id])
@@ -60,7 +77,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             client_factory = lambda _case: create_llm_client(config)
 
-        runner = EvalRunner(project_root=PROJECT_ROOT, client_factory=client_factory)
+        if args.target == "database":
+            database_config = read_postgres_config()
+            registry = DatabaseRegistry()
+            database = registry.register(
+                database_config,
+                display_name="Phase 2 Database Eval",
+            )
+            secrets = secrets + (database_config.dsn,)
+            runner = DatabaseEvalRunner(
+                registry=registry,
+                database_id=database.database_id,
+                client_factory=client_factory,
+            )
+        else:
+            runner = EvalRunner(
+                project_root=PROJECT_ROOT,
+                client_factory=client_factory,
+            )
         run = runner.run(
             cases,
             provider=provider,

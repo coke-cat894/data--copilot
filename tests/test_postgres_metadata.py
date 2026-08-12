@@ -34,6 +34,12 @@ from data_copilot.execution.postgres_metadata_queries import (
 )
 
 
+def test_optional_schema_filter_has_explicit_postgres_type_context() -> None:
+    assert "%s::text IS NULL" in LIST_TABLES_SQL
+    assert "pg_toast%%" in LIST_TABLES_SQL
+    assert "pg_temp_%%" in LIST_TABLES_SQL
+
+
 DSN = "postgresql://analyst:super-secret@db.example:5432/analytics"
 
 

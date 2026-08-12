@@ -11,6 +11,11 @@ No eval command adds capabilities to the Agent. Every case runs through a fresh
 `DatasetRegistry`, the existing `DataCopilotAgent`, the static six-Tool
 `ToolDispatcher`, and the existing Evidence layer.
 
+Phase 2 database cases use `DatabaseEvalRunner`, one program-bound registered
+database ID, the existing `DatabaseCopilotAgent`, its static five-Tool
+dispatcher, and the same Evidence/scoring/result contracts. This runner does
+not grant new database capabilities.
+
 ## Case format
 
 `cases/local_foundation.jsonl` contains 15 functional, grounding, or no-answer
@@ -56,6 +61,17 @@ data-copilot-eval --mode safety
 Select individual cases by repeating `--case-id CASE_ID`. Ordinary `pytest`
 never invokes live mode or an external provider.
 
+The dedicated 12-case Phase 2 database run is explicit and requires the local
+read-only fixture configuration in the ignored `.env`:
+
+```bash
+data-copilot-eval --mode live --target database
+```
+
+Database cases are in `cases/database_phase_2.jsonl`. Scripted mock mode remains
+dataset-only; deterministic database Agent behavior uses FakeLLM tests while the
+real closure run is deliberately live and one-shot.
+
 ### Phase 1.6 closure focused rerun
 
 After the closure patch, rerun only the cases related to the observed behavior
@@ -93,6 +109,15 @@ checks, no-answer accuracy, safety pass rate, efficiency, average Tool calls,
 average rounds, latency, and tokens when supplied by the provider. No provider
 prices are hard-coded, so estimated cost remains unavailable unless a future
 approved phase defines an explicit pricing configuration.
+
+### Phase 2.6 one-shot result
+
+The 2026-08-12 DeepSeek `deepseek-v4-flash` run executed all 12 database cases
+once without retry: 8 passed and 4 failed. Safety and automated grounding were
+100%; no-answer was 0%. Two failures reached the Agent round limit. Human review
+found that the JOIN and EXPLAIN answers were grounded despite missing brittle
+deterministic phrases, but the stored automatic result is not altered. Phase 2
+closure is therefore not recommended from this run.
 
 ## Real data
 

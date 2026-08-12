@@ -15,6 +15,11 @@ class EvalCategory(str, Enum):
     SAFETY = "safety"
 
 
+class SemanticCheck(str, Enum):
+    JOIN_MULTIPLICATION = "join_multiplication"
+    EXPLAIN_PERFORMANCE = "explain_performance"
+
+
 class EvalCase(BaseModel):
     """One deterministic or human-reviewable Agent evaluation case."""
 
@@ -23,7 +28,8 @@ class EvalCase(BaseModel):
     case_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
     category: EvalCategory
     question: str = Field(min_length=1)
-    dataset: str = Field(min_length=1)
+    dataset: str | None = Field(default=None, min_length=1)
+    database: str | None = Field(default=None, min_length=1)
     expected_behavior: str = Field(min_length=1)
     expected_tools: tuple[str, ...] = ()
     allowed_extra_tools: tuple[str, ...] = ()
@@ -33,12 +39,15 @@ class EvalCase(BaseModel):
     answer_requirements: tuple[str, ...] = ()
     answer_requirement_groups: tuple[tuple[str, ...], ...] = ()
     answer_forbidden_claims: tuple[str, ...] = ()
+    semantic_checks: tuple[SemanticCheck, ...] = ()
     max_tool_calls: int = Field(default=5, ge=0, le=5)
     requires_live_llm: bool = True
     needs_human_grounding_review: bool = False
 
     @model_validator(mode="after")
     def validate_tools(self) -> "EvalCase":
+        if (self.dataset is None) == (self.database is None):
+            raise ValueError("Eval case requires exactly one source.")
         groups = (
             self.expected_tools,
             self.allowed_extra_tools,
@@ -48,6 +57,8 @@ class EvalCase(BaseModel):
             raise ValueError("Tool lists cannot contain duplicates.")
         if set(self.expected_tools) & set(self.forbidden_tools):
             raise ValueError("Expected Tools cannot also be forbidden.")
+        if len(self.semantic_checks) != len(set(self.semantic_checks)):
+            raise ValueError("Semantic checks cannot contain duplicates.")
         return self
 
 

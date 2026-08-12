@@ -7,7 +7,6 @@ from data_copilot.agent import DataCopilotAgent
 from data_copilot.datasets import DatasetRegistry
 from data_copilot.errors import (
     AgentExecutionError,
-    AgentRoundLimitError,
     LLMClientError,
 )
 from data_copilot.llm import (
@@ -189,23 +188,27 @@ def test_rejected_tool_requests_are_safe_and_recoverable(
     assert "Traceback" not in tool_output
 
 
-def test_max_tool_rounds_stops_before_sixth_execution(
+def test_max_tool_rounds_gets_one_tool_disabled_final_synthesis(
     registered_dataset: tuple[DatasetRegistry, str, Path]
 ) -> None:
     registry, dataset_id, _ = registered_dataset
-    client = FakeLLMClient(
-        [
+    client = FakeLLMClient([
+        *(
             _tool_call("inspect_dataset", {}, call_id=f"call_{index}")
-            for index in range(6)
-        ]
-    )
+            for index in range(5)
+        ),
+        LLMResponse(text="Final answer from accumulated Evidence."),
+    ])
     agent = DataCopilotAgent(registry, dataset_id, client)
 
-    with pytest.raises(AgentRoundLimitError, match="MAX_TOOL_ROUNDS=5"):
-        agent.ask("Keep inspecting")
+    result = agent.ask("Keep inspecting")
 
     assert len(client.requests) == 6
     assert sum(message.role is LLMRole.TOOL for message in agent.messages) == 5
+    assert client.requests[-1][1] == ()
+    assert result.tool_calls_used == 5
+    assert result.rounds == 6
+    assert result.answer == "Final answer from accumulated Evidence."
 
 
 def test_prompt_injection_cell_stays_inside_evidence(

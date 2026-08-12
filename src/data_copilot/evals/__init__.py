@@ -7,7 +7,7 @@ from data_copilot.evals.models import (
     EvalRun,
     EvalSummary,
 )
-from data_copilot.evals.runner import EvalRunner
+from data_copilot.evals.runner import DatabaseEvalRunner, EvalRunner
 
 __all__ = [
     "EvalCase",
@@ -16,4 +16,5 @@ __all__ = [
     "EvalRun",
     "EvalRunner",
     "EvalSummary",
+    "DatabaseEvalRunner",
 ]

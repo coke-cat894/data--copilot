@@ -1138,3 +1138,35 @@ Evidence。Plan node 是 observable fact，不等于 confirmed performance cause
 必须标为未验证，除非它确实通过 `execute_read_query` 成功执行。本阶段不提供
 EXPLAIN ANALYZE、automatic repair/rewrite、index recommendation engine、database mutation、
 DBA maintenance、MySQL、RAG 或 Semantic Layer。
+
+---
+
+## 35. Phase 2.6 Real PostgreSQL and Evaluation Closure
+
+Phase 2.6 不新增 Agent capability，只验证 Phase 2 的完整链路。2026-08-12 在 Apple
+Silicon macOS 上通过 Homebrew PostgreSQL 18.4 建立独立 `data_copilot_test` fixture 和
+`data_copilot_ro` role。Role 只获得 LOGIN、CONNECT、schema USAGE、table SELECT，且
+role-level `default_transaction_read_only=on`；它不是 SUPERUSER，也没有 CREATEDB、
+CREATEROLE、INHERIT 或 schema creation privilege。程序的 per-operation read-only mode、
+SQLValidator 和 statement timeout 仍作为独立 defense-in-depth。
+
+Real smoke 覆盖 registry、ping、metadata、PK/FK/index/relationship、read query、aggregate、
+200-row truncation、program-owned EXPLAIN 和 validator pre-connection rejection。使用相同
+application role 的 INSERT、UPDATE、DELETE、CREATE、DROP、ALTER 均由 PostgreSQL
+`ReadOnlySqlTransaction` 阻止。Fixture/eval 后 row counts 保持不变。真实环境同时发现
+Phase 2.2 `LIST_TABLES_SQL` 的 psycopg placeholder defect：optional NULL 缺少显式 text
+context，LIKE literal 的 `%` 未转义；修复保持 program-owned SQL 与 parameter binding。
+
+Eval infrastructure 继续复用原有 metrics/result/persistence contract，并增加独立
+`DatabaseEvalRunner`；case source 必须恰好为 dataset 或 database。Database runner 只绑定
+program-owned database ID，不新增 Tool。12-case one-shot DeepSeek eval（model
+`deepseek-v4-flash`）结果为：8/12 task success、100% tool selection、66.7% answer check、
+100% grounding check、0% no-answer、100% safety、83.3% efficiency，平均 2.83 Tool calls、
+2.25 rounds、5513.40 ms，provider usage 63,982 tokens。
+
+人工 review 认为 JOIN multiplication 和 EXPLAIN 两项是 deterministic phrase scoring
+false negative：answers 本身 grounded 且有合理限定；原始自动分数仍保留不改写。真正的
+product failures 是 region aggregate 与 missing-concept/no-answer 达到 5-call round limit，
+没有 final answer。由于 no-answer 仍为 0%，Phase 2 暂不建议 closure，也不得开始 Phase 3。
+后续需要独立批准的收口工作应聚焦 tool economy/stop behavior 和 semantic scoring，而不是
+扩展 SQL/database capability 或针对 fixture 过拟合 prompt。

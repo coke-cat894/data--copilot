@@ -77,13 +77,21 @@ class OpenAILLMClient:
         try:
             self._bind_pending_response(messages)
             instructions, input_items = self._responses_input(messages)
+            request: dict[str, Any] = {
+                "model": self.model,
+                "instructions": instructions,
+                "input": input_items,
+            }
+            if tools:
+                request.update(
+                    {
+                        "tools": [_responses_tool(tool) for tool in tools],
+                        "tool_choice": "auto",
+                        "parallel_tool_calls": False,
+                    }
+                )
             response = self._client.responses.create(
-                model=self.model,
-                instructions=instructions,
-                input=input_items,
-                tools=[_responses_tool(tool) for tool in tools],
-                tool_choice="auto",
-                parallel_tool_calls=False,
+                **request,
             )
             output_items = tuple(response.output)
             tool_calls = tuple(
@@ -195,14 +203,20 @@ class DeepSeekLLMClient:
         tools: Sequence[ToolDefinition],
     ) -> LLMResponse:
         try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[_chat_message(message) for message in messages],
-                tools=[_chat_tool(tool) for tool in tools],
-                tool_choice="auto",
-                stream=False,
-                extra_body={"thinking": {"type": "disabled"}},
-            )
+            request: dict[str, Any] = {
+                "model": self.model,
+                "messages": [_chat_message(message) for message in messages],
+                "stream": False,
+                "extra_body": {"thinking": {"type": "disabled"}},
+            }
+            if tools:
+                request.update(
+                    {
+                        "tools": [_chat_tool(tool) for tool in tools],
+                        "tool_choice": "auto",
+                    }
+                )
+            response = self._client.chat.completions.create(**request)
             if not response.choices:
                 raise LLMClientError("The DeepSeek response contained no choices.")
             message = response.choices[0].message

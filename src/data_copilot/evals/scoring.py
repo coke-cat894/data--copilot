@@ -5,6 +5,7 @@ from data_copilot.evals.models import (
     EvalChecks,
     EvalCategory,
     EvalResult,
+    SemanticCheck,
     EvalSummary,
 )
 
@@ -32,7 +33,7 @@ def score_case(
     ) and all(
         any(_requirement_present(option, normalized) for option in group)
         for group in case.answer_requirement_groups
-    )
+    ) and all(_semantic_check_passes(check, normalized) for check in case.semantic_checks)
     forbidden_claims = all(
         _normalize(item) not in normalized
         for item in case.answer_forbidden_claims
@@ -142,3 +143,102 @@ def _requirement_present(requirement: str, normalized_answer: str) -> bool:
         if normalized_requirement in normalized_group:
             return any(item in normalized_answer for item in normalized_group)
     return normalized_requirement in normalized_answer
+
+
+def _semantic_check_passes(
+    check: SemanticCheck,
+    normalized_answer: str,
+) -> bool:
+    if check is SemanticCheck.JOIN_MULTIPLICATION:
+        return all(
+            _contains_any(normalized_answer, group)
+            for group in (
+                (
+                    "one-to-many",
+                    "one to many",
+                    "1-to-many",
+                    "一对多",
+                    "多条子记录",
+                    "multiple child rows",
+                    "repeated matching child rows",
+                ),
+                (
+                    "每个父记录产生多行",
+                    "每个订单重复",
+                    "每个订单的多行",
+                    "multiple output rows per parent",
+                    "parent row is repeated",
+                    "parent can match multiple rows",
+                    "one parent produces multiple output rows",
+                    "父记录在结果中重复",
+                    "展开成多行",
+                    "结果行数增加",
+                    "行数会相乘",
+                ),
+                (
+                    "不是数据库 bug",
+                    "不是数据库bug",
+                    "不是 bug",
+                    "not a database bug",
+                    "not a db bug",
+                    "expected relational behavior",
+                    "预期结果",
+                    "正常的 sql join 行为",
+                    "正常的连接行为",
+                ),
+            )
+        )
+    if check is SemanticCheck.EXPLAIN_PERFORMANCE:
+        return all(
+            _contains_any(normalized_answer, group)
+            for group in (
+                (
+                    "query plan",
+                    "execution plan",
+                    "plan evidence",
+                    "查询计划",
+                    "计划显示",
+                ),
+                (
+                    "seq scan",
+                    "index scan",
+                    "bitmap scan",
+                    "nested loop",
+                    "hash join",
+                    "merge join",
+                    "aggregate",
+                    "sort",
+                    "filter",
+                    "estimated rows",
+                    "plan rows",
+                    "total cost",
+                    "顺序扫描",
+                    "索引扫描",
+                    "哈希连接",
+                    "聚合",
+                    "估计扫描",
+                    "成本",
+                ),
+                (
+                    "may",
+                    "might",
+                    "could",
+                    "possible",
+                    "potential",
+                    "if ",
+                    "does not prove",
+                    "not prove",
+                    "可能",
+                    "也可能",
+                    "不证明",
+                    "不能证明",
+                    "如果",
+                    "若",
+                ),
+            )
+        )
+    return False
+
+
+def _contains_any(normalized_answer: str, values: tuple[str, ...]) -> bool:
+    return any(_normalize(value) in normalized_answer for value in values)
