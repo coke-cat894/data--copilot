@@ -7,12 +7,12 @@ than prompt instructions.
 
 ## Current status
 
-Phase 3.1 — Semantic Catalog Foundation: **implemented as a standalone deterministic boundary**.
+Phase 3.2 — Semantic Resolution + Semantic Evidence: **implemented as a standalone deterministic boundary**.
 
 Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged and Phase 2 is frozen. Phase 3.1 adds trusted local semantic metadata;
-it does not connect semantics to either Agent, perform semantic retrieval, or
-start RAG.
+unchanged and Phase 2 and Phase 3.1 are frozen. Phase 3.2 resolves already
+extracted candidate terms and builds compact relevant business context; it does
+not connect semantics to either Agent or start RAG.
 
 The current implementation:
 
@@ -42,7 +42,9 @@ The current implementation:
   answer from Compact Evidence; and
 - loads explicitly configured, trusted local YAML into typed metric, dimension,
   and glossary definitions with deterministic aliases, validated references,
-  and path-safe logical provenance.
+  and path-safe logical provenance; and
+- resolves bounded candidate semantic terms across those definitions and builds
+  a separate, bounded `SEMANTIC_EVIDENCE` JSON envelope for relevant matches.
 
 It does not include EXPLAIN ANALYZE, automatic SQL repair or optimization,
 database writes, cross-database queries, persistent memory, RAG, MCP, connection
@@ -69,6 +71,29 @@ canonical-name or synonym ambiguity, invalid cross-references, malformed files,
 unsupported fields (including SQL), and unsafe source forms fail closed. The
 catalog is currently a program-facing foundation only; no catalog content is
 added to system prompts.
+
+`SemanticResolver` accepts candidate terms already extracted by its caller. It
+matches only stable IDs, canonical names, and explicit synonyms using the same
+conservative normalization. Missing terms fail explicitly; a term valid for
+more than one semantic type is ambiguous and receives no insertion-order or
+type priority. Collections are bounded and retain caller order.
+
+`SemanticEvidenceBuilder` retrieves each resolved definition back from the
+catalog, rejects inconsistent or unknown resolution records, deduplicates exact
+definition identities, and applies definition-count, text, synonym, field, and
+total serialized-size limits. Truncation and warnings remain explicit, while
+logical source-file and definition-ID provenance is retained.
+
+The channels remain separate:
+
+```text
+SEMANTIC_EVIDENCE = trusted business meaning from relevant catalog definitions
+DATA_EVIDENCE     = observed facts from bounded data or database execution
+```
+
+Semantic evidence is content, not instructions or a capability grant. Phase
+3.2 does not place either channel into an Agent prompt, parse natural-language
+questions, generate SQL, execute SQL, or validate fields against PostgreSQL.
 
 ## Requirements and setup
 

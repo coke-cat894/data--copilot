@@ -1204,3 +1204,45 @@ absolute filesystem path。
 本阶段不把 catalog 写入 System Prompt，不向 Agent 注册 Semantic Tool，也不提供 RAG、
 semantic ranking、live database cross-check 或 metric-to-SQL。后续阶段只能按需把 compact
 relevant semantic evidence 接入 Agent，并继续让生成 SQL 经过冻结的 Phase 2 SQLValidator。
+
+---
+
+## 37. Phase 3.2 Semantic Resolution + Semantic Evidence
+
+Phase 3.2 在冻结的 Semantic Catalog 上增加 LLM-free resolution boundary：
+
+```text
+bounded extracted candidate terms
+→ exact ID / canonical name / explicit synonym resolution
+→ typed SemanticResolution
+→ catalog identity re-validation
+→ bounded SEMANTIC_EVIDENCE
+```
+
+`SemanticResolver` 不解析自然语言，只接收 caller 已提取的 candidate terms。它在 metric、
+dimension 和 glossary 三种类型中统一检查 conservative normalized aliases。一个 term 匹配
+多个类型时必须抛出 ambiguity error；不得按 type、insertion order、shortest name 或其他
+隐含优先级选择。Multi-term resolution 最多 20 项并保持输入顺序。
+
+Resolution result 只记录 query term、semantic type、stable definition ID、canonical name、
+match type 和 safe provenance，不复制完整 definition。`SemanticEvidenceBuilder` 必须使用
+stable type + ID 从相同 catalog 重新取得 definition，并验证 canonical name 和 provenance，
+因此 forged、stale 或 unknown resolution 不能进入 evidence。
+
+`SEMANTIC_EVIDENCE` 使用独立的 typed envelope 和 deterministic compact JSON formatter，只
+包含相关 definition。它分别限制 definition count、text chars、synonyms、field references
+和 serialized chars；任何裁剪必须设置 `truncated` 并提供 warning。Total-size reduction 只
+删除完整的 trailing definitions，不切断 JSON。Provenance 继续只包含 logical source name
+和 definition ID。
+
+语义与观测证据必须保持独立：
+
+```text
+SEMANTIC_EVIDENCE = trusted configured business meaning
+DATA_EVIDENCE     = observed data/query facts
+```
+
+即使 business definition 含有 prompt-like 或 SQL-like text，也只是 content，不能变成 system
+instruction、Tool permission 或 executable SQL。本阶段不修改 Agent prompt，不注册 Agent
+Tool，不调用 LLM/PostgreSQL，不生成 SQL，也不开始 RAG、embedding、fuzzy search、live
+catalog consistency check 或 Phase 3 eval。

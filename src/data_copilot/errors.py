@@ -199,3 +199,15 @@ class SemanticAmbiguityError(SemanticConfigurationError):
 
 class SemanticReferenceError(SemanticConfigurationError):
     """Raised when a semantic definition references an unknown definition ID."""
+
+
+class SemanticResolutionLimitError(DataCopilotError):
+    """Raised when a semantic-resolution request exceeds its deterministic limit."""
+
+
+class SemanticEvidenceBuildError(DataCopilotError):
+    """Raised when resolved semantics cannot become trusted semantic evidence."""
+
+
+class SemanticEvidenceLimitError(SemanticEvidenceBuildError):
+    """Raised when semantic evidence cannot fit its configured size limit."""
