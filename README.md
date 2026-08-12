@@ -7,12 +7,12 @@ than prompt instructions.
 
 ## Current status
 
-Phase 3.3 — Minimal Business-document RAG: **implemented as a standalone deterministic boundary**.
+Phase 3.4 — Semantic Agent Integration: **implemented; Phase 3 remains open pending Phase 3.5 evaluation**.
 
 Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged, and Phase 2 through Phase 3.2 are frozen. Phase 3.3 retrieves bounded
-context from trusted local Markdown/text documents; it does not connect RAG or
-semantics to either Agent.
+unchanged, and Phase 2 through Phase 3.3 are frozen. Phase 3.4 optionally gives
+the existing single-database Agent selective semantic-resolution and local
+document-retrieval Tools while preserving the Phase 2 SQL execution boundary.
 
 The current implementation:
 
@@ -48,12 +48,15 @@ The current implementation:
   and
 - loads and chunks explicitly configured Markdown/text business documents,
   searches them with a deterministic in-memory lexical index, and builds a
-  separate bounded `DOCUMENT_EVIDENCE` envelope from retrieved chunks.
+  separate bounded `DOCUMENT_EVIDENCE` envelope from retrieved chunks; and
+- optionally lets the existing `DatabaseCopilotAgent` select semantic,
+  document, metadata, plan, and read-query Tools within its unchanged shared
+  five-call budget and reason across the three separate Evidence channels.
 
 It does not include EXPLAIN ANALYZE, automatic SQL repair or optimization,
 database writes, cross-database queries, persistent memory, vector/external RAG,
-MCP, connection pooling, Agent semantic/RAG integration, fuzzy semantic
-matching, or metric-to-SQL compilation.
+MCP, connection pooling, fuzzy semantic matching, metric-to-SQL compilation,
+automatic catalog/document conflict resolution, or Phase 3 live evaluation.
 
 ## Semantic Catalog Foundation
 
@@ -72,9 +75,9 @@ and definition ID.
 Catalog lookup supports stable IDs, canonical names, and explicitly configured
 synonyms using trim plus case-insensitive normalization. Duplicate IDs,
 canonical-name or synonym ambiguity, invalid cross-references, malformed files,
-unsupported fields (including SQL), and unsafe source forms fail closed. The
-catalog is currently a program-facing foundation only; no catalog content is
-added to system prompts.
+unsupported fields (including SQL), and unsafe source forms fail closed. Phase
+3.1 kept this as a program-facing foundation; Phase 3.4 exposes only selectively
+resolved, bounded semantic Evidence rather than catalog contents.
 
 `SemanticResolver` accepts candidate terms already extracted by its caller. It
 matches only stable IDs, canonical names, and explicit synonyms using the same
@@ -97,8 +100,8 @@ DATA_EVIDENCE     = observed facts from bounded data or database execution
 ```
 
 Semantic evidence is content, not instructions or a capability grant. Phase
-3.2 does not place either channel into an Agent prompt, parse natural-language
-questions, generate SQL, execute SQL, or validate fields against PostgreSQL.
+3.2 itself did not integrate the Agent, generate SQL, execute SQL, or validate
+fields against PostgreSQL; Phase 3.4 reuses its bounded output unchanged.
 
 ## Minimal Business-document RAG
 
@@ -125,6 +128,42 @@ content and cannot grant permissions or execute anything.
 Phase 3.3 adds no embeddings, vector database, external API, persistent index,
 PDF/DOCX support, query rewriting, reranker, conflict resolution, Agent Tool, or
 Agent prompt integration.
+
+## Semantic Agent Integration
+
+`DatabaseCopilotAgent` continues to expose the same five database Tools. When a
+`SemanticCatalog` and/or `BusinessDocumentIndex` is explicitly configured, it
+also exposes `resolve_semantic` and/or `retrieve_documents`. Without those
+resources, its five-tool Phase 2 behavior and schemas remain unchanged.
+
+`resolve_semantic` accepts a bounded list of already-extracted candidate terms
+and returns only relevant `SEMANTIC_EVIDENCE`. Missing or cross-type ambiguous
+terms use the existing structured safe Tool-error channel; the Agent is guided
+to clarify or state missing meaning rather than fabricate it.
+`retrieve_documents` accepts a bounded plain query and `top_k`, returning only
+bounded `DOCUMENT_EVIDENCE` from the configured local index. Neither Tool calls
+an LLM or exposes catalog, filesystem, or index internals.
+
+Routing is need-based: a plain row count can use database execution directly; a
+definition can use semantics only; policy rationale can use semantics plus
+documents; and a business metric value can combine semantic meaning with
+metadata and `DATA_EVIDENCE`. Existing Evidence remains in conversation and
+should be reused. Optional context calls consume the existing five-call budget;
+the final Tool-disabled synthesis and no-answer behavior remain active.
+
+Semantic definitions may inform LLM-generated PostgreSQL, but there is no metric
+compiler. The Agent is instructed to inspect relevant database metadata when
+required fields need verification and to disclose semantic/database
+inconsistency instead of inventing unavailable fields. Every generated query
+still follows the unchanged `SQLValidator` → read-only PostgreSQL → bounded
+`DATA_EVIDENCE` path. Structured catalog definitions remain canonical over
+document context; material conflicts are disclosed rather than automatically
+resolved.
+
+Domain knowledge remains catalog/document configuration, not hardcoded Agent
+logic. All three Evidence channels remain content and cannot override system
+rules or Tool permissions. Phase 3 is not considered complete until Phase 3.5
+live evaluation is separately approved and performed.
 
 ## Requirements and setup
 

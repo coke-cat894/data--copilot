@@ -1296,3 +1296,61 @@ SQL-like text 只能原样成为 evidence content，不得执行、修改 Tool p
 rules。本阶段不修改 Agent/Prompt，不注册 RAG Tool，不生成或执行 SQL，不调用 LLM、
 PostgreSQL、network 或 external API，也不提供 vector DB、embedding、PDF/DOCX、catalog
 conflict resolution、Phase 3 live eval 或 Phase 3.4 capability。
+
+---
+
+## 39. Phase 3.4 Semantic Agent Integration
+
+Phase 3.4 扩展 existing single `DatabaseCopilotAgent`，不创建 multi-agent，也不修改 frozen
+Phase 2 database dispatcher、SQL validator 或 execution engine。Agent 的 five database Tools
+保持原样；只有显式配置 `SemanticCatalog` 和/或 `BusinessDocumentIndex` 时，才分别追加：
+
+```text
+resolve_semantic   → bounded SEMANTIC_EVIDENCE
+retrieve_documents → bounded DOCUMENT_EVIDENCE
+```
+
+两个 adapter 只接受 strict bounded arguments。`resolve_semantic` 接收 caller/LLM 提取的
+candidate terms，复用 deterministic exact ID/name/synonym resolution 和 existing semantic
+evidence builder；missing/ambiguity 通过 safe structured Tool error 返回，不选择任一 meaning。
+`retrieve_documents` 只接受 lexical query + bounded top_k，复用 configured local index 和
+existing document evidence builder。Tool schema 不暴露 catalog、raw documents、path、index
+internals、database ID、credential 或 SQL validator。
+
+Agent routing 是 need-based，不强制 semantic → document → metadata → query chain：
+
+```text
+plain row count       → database Tool only
+metric definition     → resolve_semantic
+policy / rationale    → semantic + document as needed
+business metric value → semantic + metadata verification + read query
+```
+
+所有 optional context Tool calls 与 database Tool calls 共用原有 `MAX_TOOL_ROUNDS=5`，不增加
+budget。Conversation 继续保留 accumulated Evidence，prompt 要求不重复 equivalent resolution、
+retrieval 或 metadata probe。Budget exhaustion 仍进入 Tool-disabled final synthesis；该 synthesis
+可以使用 accumulated SEMANTIC、DOCUMENT、DATA Evidence，但 required numerical DATA Evidence
+缺失时仍必须 no-answer。
+
+三个 channel 的 ownership 不合并：structured semantic definition 是 current canonical business
+meaning；document evidence 是 explanation/history/context；data evidence 是 observed database
+fact。Document 与 catalog material conflict 时只 disclosure，不自动 merge。Citation 只能使用
+Evidence 中的 logical provenance，不得创造 path 或 source。
+
+Semantic definition 只给 LLM 提供 meaning、required fields 和 filters，不生成 executable SQL。
+Agent 在需要时使用 metadata 验证 semantic field；缺失时报告 semantic/database inconsistency，
+不得生成 fabricated field SQL。LLM-generated SQL 继续进入完全相同的：
+
+```text
+SQLValidator
+→ registered database ID
+→ read-only PostgreSQL operation + timeout
+→ bounded DATA_EVIDENCE
+```
+
+SEMANTIC_EVIDENCE、DOCUMENT_EVIDENCE 和 DATA_EVIDENCE 全部是 content，不是 instruction 或
+permission。Prompt-like/SQL-like text 不得触发 Tool。Optional resources 未配置时，Agent schema
+和 Phase 2 behavior 保持 five-tool compatible。Domain knowledge 只来自 generic catalog/document
+configuration，不硬编码行业规则。本阶段不提供 metric compiler、embedding、vector DB、
+reranker、automatic conflict resolver、multi-agent、MySQL、write 或 Phase 3.5 live eval；Phase 3
+在 3.5 完成前不宣告 closure。
