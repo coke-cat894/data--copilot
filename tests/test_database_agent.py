@@ -37,6 +37,21 @@ def _tool_call(name: str, arguments: dict[str, object], call_id: str | None = No
     )
 
 
+def _tool_calls(
+    *calls: tuple[str, dict[str, object], str],
+) -> LLMResponse:
+    return LLMResponse(
+        tool_calls=tuple(
+            LLMToolCall(
+                call_id=call_id,
+                name=name,
+                arguments=json.dumps(arguments),
+            )
+            for name, arguments, call_id in calls
+        )
+    )
+
+
 @pytest.fixture
 def database_agent_context() -> tuple[DatabaseRegistry, str, MagicMock]:
     registry = DatabaseRegistry()
@@ -532,6 +547,88 @@ def test_database_tool_budget_remains_five_and_allows_one_final_synthesis(
         client.requests[-1][0][-1].content or ""
     ).casefold()
     assert engine.inspect_table.call_count == 5
+
+
+def test_tool_batch_executes_only_first_call_then_fresh_decision_wins(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    stale_sql = "SELECT 999 AS stale"
+    fresh_sql = "SELECT SUM(amount) AS total FROM sales.orders"
+    agent, _, engine = _agent(
+        database_agent_context,
+        [
+            _tool_calls(
+                ("list_tables", {"schema": "sales"}, "batch_a"),
+                (
+                    "inspect_table",
+                    {"schema_name": "sales", "table_name": "orders"},
+                    "batch_b",
+                ),
+                ("execute_read_query", {"sql": stale_sql}, "batch_c"),
+            ),
+            _tool_call(
+                "execute_read_query",
+                {"sql": fresh_sql},
+                call_id="fresh_query",
+            ),
+            LLMResponse(text="The fresh query returned the grounded total."),
+        ],
+    )
+
+    result = agent.ask("Find the grounded total.")
+
+    assert result.tool_calls_used == 2
+    engine.list_tables.assert_called_once()
+    engine.inspect_table.assert_not_called()
+    engine.execute_read_query.assert_called_once_with(
+        database_agent_context[1], fresh_sql
+    )
+    assert [
+        call.call_id
+        for message in agent.messages
+        for call in message.tool_calls
+    ] == ["batch_a", "fresh_query"]
+
+
+def test_oversized_batch_with_three_remaining_executes_first_and_continues(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    agent, client, engine = _agent(
+        database_agent_context,
+        [
+            _tool_call("list_tables", {"schema": None}, call_id="prior_1"),
+            _tool_call("list_tables", {"schema": "sales"}, call_id="prior_2"),
+            _tool_calls(
+                (
+                    "inspect_table",
+                    {"schema_name": "sales", "table_name": "orders"},
+                    "oversized_a",
+                ),
+                ("list_tables", {"schema": "crm"}, "oversized_b"),
+                ("execute_read_query", {"sql": "SELECT 2"}, "oversized_c"),
+                ("execute_read_query", {"sql": "SELECT 3"}, "oversized_d"),
+            ),
+            LLMResponse(text="The fresh decision can now synthesize the answer."),
+        ],
+    )
+
+    result = agent.ask("Inspect before answering.")
+
+    assert result.tool_calls_used == 3
+    assert result.rounds == 4
+    assert len(client.requests) == 4
+    assert client.requests[-1][1] != ()
+    assert "Tool calls remaining: 2" in (
+        client.requests[-1][0][1].content or ""
+    )
+    assert engine.list_tables.call_count == 2
+    engine.inspect_table.assert_called_once()
+    engine.execute_read_query.assert_not_called()
+    assert all(
+        call.call_id not in {"oversized_b", "oversized_c", "oversized_d"}
+        for message in agent.messages
+        for call in message.tool_calls
+    )
 
 
 def test_last_tool_budget_prioritizes_answer_producing_query(

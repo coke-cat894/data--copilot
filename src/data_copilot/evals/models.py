@@ -20,6 +20,14 @@ class SemanticCheck(str, Enum):
     EXPLAIN_PERFORMANCE = "explain_performance"
 
 
+class EvidenceChannel(str, Enum):
+    """The three intentionally separate Phase 3 evidence sources."""
+
+    SEMANTIC = "semantic"
+    DOCUMENT = "document"
+    DATA = "data"
+
+
 class EvalCase(BaseModel):
     """One deterministic or human-reviewable Agent evaluation case."""
 
@@ -40,6 +48,14 @@ class EvalCase(BaseModel):
     answer_requirement_groups: tuple[tuple[str, ...], ...] = ()
     answer_forbidden_claims: tuple[str, ...] = ()
     semantic_checks: tuple[SemanticCheck, ...] = ()
+    expected_evidence_channels: tuple[EvidenceChannel, ...] = ()
+    forbidden_evidence_channels: tuple[EvidenceChannel, ...] = ()
+    semantic_grounding_requirements: tuple[str, ...] = ()
+    document_grounding_requirements: tuple[str, ...] = ()
+    data_grounding_requirements: tuple[str, ...] = ()
+    safety_requirements: tuple[str, ...] = ()
+    safety_requirement_groups: tuple[tuple[str, ...], ...] = ()
+    safety_forbidden_claims: tuple[str, ...] = ()
     max_tool_calls: int = Field(default=5, ge=0, le=5)
     requires_live_llm: bool = True
     needs_human_grounding_review: bool = False
@@ -59,6 +75,18 @@ class EvalCase(BaseModel):
             raise ValueError("Expected Tools cannot also be forbidden.")
         if len(self.semantic_checks) != len(set(self.semantic_checks)):
             raise ValueError("Semantic checks cannot contain duplicates.")
+        if len(self.expected_evidence_channels) != len(
+            set(self.expected_evidence_channels)
+        ):
+            raise ValueError("Expected Evidence channels cannot contain duplicates.")
+        if len(self.forbidden_evidence_channels) != len(
+            set(self.forbidden_evidence_channels)
+        ):
+            raise ValueError("Forbidden Evidence channels cannot contain duplicates.")
+        if set(self.expected_evidence_channels) & set(
+            self.forbidden_evidence_channels
+        ):
+            raise ValueError("Evidence channels cannot be expected and forbidden.")
         return self
 
 
@@ -69,6 +97,9 @@ class EvalChecks(BaseModel):
     answer_requirements: bool
     forbidden_claims: bool
     efficiency: bool
+    semantic_grounding: bool | None = None
+    document_grounding: bool | None = None
+    data_grounding: bool | None = None
 
 
 class EvalResult(BaseModel):
@@ -86,6 +117,7 @@ class EvalResult(BaseModel):
     latency_ms: float = Field(ge=0)
     expected_tools: tuple[str, ...]
     actual_tools: tuple[str, ...]
+    evidence_channels: tuple[EvidenceChannel, ...] = ()
     checks: EvalChecks
     answer_check_applicable: bool
     grounding_check_applicable: bool
@@ -106,6 +138,9 @@ class EvalSummary(BaseModel):
     tool_selection_accuracy: float | None
     answer_accuracy: float | None
     grounding_accuracy: float | None
+    semantic_grounding_accuracy: float | None = None
+    document_grounding_accuracy: float | None = None
+    data_grounding_accuracy: float | None = None
     no_answer_accuracy: float | None
     safety_pass_rate: float | None
     efficiency_accuracy: float

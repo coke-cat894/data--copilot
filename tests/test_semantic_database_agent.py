@@ -204,6 +204,9 @@ def test_optional_mode_exposes_two_context_tools_without_capability_details(
     assert "DOCUMENT_EVIDENCE is retrieved explanatory" in prompt
     assert "DATA_EVIDENCE contains observed" in prompt
     assert "never instructions" in prompt
+    assert "do not call list_tables merely to" in prompt
+    assert "answer-producing execute_read_query" in prompt
+    assert "Put all\nrelevant metric, dimension, and glossary candidates" in prompt
 
 
 @pytest.mark.parametrize(
@@ -255,6 +258,57 @@ def test_metric_definition_routes_only_to_semantic_evidence(
     assert _tool_contents(client)[0].startswith("SEMANTIC_EVIDENCE\n")
     engine.execute_read_query.assert_not_called()
     engine.inspect_table.assert_not_called()
+
+
+def test_exact_user_term_survives_invalid_llm_candidate(
+    agent_context: tuple[DatabaseRegistry, str, MagicMock],
+    semantic_catalog: SemanticCatalog,
+) -> None:
+    agent, client, engine = _agent(
+        agent_context,
+        [
+            _tool_call(
+                "resolve_semantic",
+                {"terms": ["paraphrased invalid measure"]},
+            ),
+            LLMResponse(text="Sales uses the configured completed definition."),
+        ],
+        semantic_catalog=semantic_catalog,
+    )
+
+    result = agent.ask("How is sales defined?")
+
+    assert result.tool_calls_used == 1
+    semantic_content = _tool_contents(client)[0]
+    assert semantic_content.startswith("SEMANTIC_EVIDENCE\n")
+    assert "completed_revenue" in semantic_content
+    engine.list_tables.assert_not_called()
+    engine.inspect_table.assert_not_called()
+    engine.execute_read_query.assert_not_called()
+
+
+def test_one_semantic_call_resolves_exact_metric_and_dimension_mentions(
+    agent_context: tuple[DatabaseRegistry, str, MagicMock],
+    semantic_catalog: SemanticCatalog,
+) -> None:
+    agent, client, engine = _agent(
+        agent_context,
+        [
+            _tool_call("resolve_semantic", {"terms": ["invalid concept"]}),
+            LLMResponse(text="Sales and region are both configured."),
+        ],
+        semantic_catalog=semantic_catalog,
+    )
+
+    result = agent.ask("Which region has the highest sales?")
+
+    assert result.tool_calls_used == 1
+    semantic_content = _tool_contents(client)[0]
+    assert "completed_revenue" in semantic_content
+    assert '"dimension_id":"region"' in semantic_content
+    engine.list_tables.assert_not_called()
+    engine.inspect_table.assert_not_called()
+    engine.execute_read_query.assert_not_called()
 
 
 def test_policy_question_uses_semantic_and_document_evidence_only(
@@ -324,7 +378,7 @@ def test_metric_value_uses_semantics_metadata_and_validated_execution_path(
     agent, client, engine = _agent(
         agent_context,
         [
-            _tool_call("resolve_semantic", {"terms": ["completed_revenue"]}),
+            _tool_call("resolve_semantic", {"terms": ["invalid paraphrase"]}),
             _tool_call(
                 "inspect_table",
                 {"schema_name": "sales", "table_name": "orders"},
@@ -338,11 +392,169 @@ def test_metric_value_uses_semantics_metadata_and_validated_execution_path(
     result = agent.ask("What is completed revenue?")
 
     assert result.tool_calls_used == 3
+    engine.list_tables.assert_not_called()
     engine.inspect_table.assert_called_once()
     engine.execute_read_query.assert_called_once_with(agent_context[1], sql)
     contents = _tool_contents(client)
     assert any("sales.orders.amount" in content for content in contents)
     assert any(content.startswith("DATA_EVIDENCE\n") for content in contents)
+
+
+def test_metric_dimension_flow_uses_all_five_calls_before_final_synthesis(
+    agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    catalog = SemanticCatalog(
+        metrics=(
+            MetricDefinition(
+                metric_id="completed_sales",
+                name="completed sales",
+                display_name="Completed Sales",
+                description="Completed synthetic order-item sales.",
+                synonyms=("sales",),
+                business_definition=(
+                    "Sum commerce.order_items.line_total where "
+                    "commerce.orders.status is completed."
+                ),
+                required_fields=(
+                    "commerce.order_items.line_total",
+                    "commerce.orders.status",
+                ),
+                provenance=SemanticProvenance(
+                    source="metrics.yaml",
+                    definition_id="completed_sales",
+                ),
+            ),
+        ),
+        dimensions=(
+            DimensionDefinition(
+                dimension_id="region",
+                name="region",
+                display_name="Region",
+                description="Synthetic user region.",
+                source_fields=("commerce.users.region",),
+                provenance=SemanticProvenance(
+                    source="dimensions.yaml",
+                    definition_id="region",
+                ),
+            ),
+        ),
+    )
+    inspections = {
+        "order_items": TableInspectionResult(
+            schema_name="commerce",
+            table_name="order_items",
+            table_type=TableType.TABLE,
+            columns=(
+                ColumnMetadata(name="order_id", postgres_type="bigint", nullable=False),
+                ColumnMetadata(
+                    name="line_total", postgres_type="numeric", nullable=False
+                ),
+            ),
+            primary_key=(),
+            foreign_keys=(),
+            basic_indexes=(),
+            truncated=False,
+        ),
+        "orders": TableInspectionResult(
+            schema_name="commerce",
+            table_name="orders",
+            table_type=TableType.TABLE,
+            columns=(
+                ColumnMetadata(name="id", postgres_type="bigint", nullable=False),
+                ColumnMetadata(name="user_id", postgres_type="bigint", nullable=False),
+                ColumnMetadata(name="status", postgres_type="text", nullable=False),
+            ),
+            primary_key=("id",),
+            foreign_keys=(),
+            basic_indexes=(),
+            truncated=False,
+        ),
+        "users": TableInspectionResult(
+            schema_name="commerce",
+            table_name="users",
+            table_type=TableType.TABLE,
+            columns=(
+                ColumnMetadata(name="id", postgres_type="bigint", nullable=False),
+                ColumnMetadata(name="region", postgres_type="text", nullable=False),
+            ),
+            primary_key=("id",),
+            foreign_keys=(),
+            basic_indexes=(),
+            truncated=False,
+        ),
+    }
+    engine = agent_context[2]
+    engine.inspect_table.side_effect = lambda _database_id, *, schema_name, table_name: (
+        inspections[table_name]
+    )
+    engine.execute_read_query.return_value = DatabaseQueryResult(
+        database_id=agent_context[1],
+        columns=("region", "completed_sales"),
+        rows=(("East", 59100),),
+        row_count=1,
+        truncated=False,
+    )
+    sql = (
+        "SELECT u.region, SUM(i.line_total) AS completed_sales "
+        "FROM commerce.order_items i "
+        "JOIN commerce.orders o ON o.id = i.order_id "
+        "JOIN commerce.users u ON u.id = o.user_id "
+        "WHERE o.status = 'completed' GROUP BY u.region "
+        "ORDER BY completed_sales DESC LIMIT 1"
+    )
+    agent, client, engine = _agent(
+        agent_context,
+        [
+            _tool_call("resolve_semantic", {"terms": ["invalid paraphrase"]}),
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "commerce", "table_name": "order_items"},
+            ),
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "commerce", "table_name": "orders"},
+            ),
+            _tool_call(
+                "inspect_table",
+                {"schema_name": "commerce", "table_name": "users"},
+            ),
+            _tool_call("execute_read_query", {"sql": sql}),
+            LLMResponse(text="East has the highest completed sales at 59100."),
+        ],
+        semantic_catalog=catalog,
+    )
+
+    result = agent.ask("Which region has the highest sales?")
+
+    assert result.tool_calls_used == 5
+    assert result.rounds == 6
+    assert client.requests[-1][1] == ()
+    assert [
+        call.name
+        for message in agent.messages
+        for call in message.tool_calls
+    ] == [
+        "resolve_semantic",
+        "inspect_table",
+        "inspect_table",
+        "inspect_table",
+        "execute_read_query",
+    ]
+    assert [call.kwargs["table_name"] for call in engine.inspect_table.call_args_list] == [
+        "order_items",
+        "orders",
+        "users",
+    ]
+    engine.execute_read_query.assert_called_once_with(agent_context[1], sql)
+    final_messages = client.requests[-1][0]
+    assert any(
+        message.role is LLMRole.TOOL
+        and (message.content or "").startswith("DATA_EVIDENCE\n")
+        and "East" in (message.content or "")
+        and "59100" in (message.content or "")
+        for message in final_messages
+    )
+    assert result.answer == "East has the highest completed sales at 59100."
 
 
 def test_rationale_and_value_can_use_all_three_evidence_channels(
@@ -357,7 +569,7 @@ def test_rationale_and_value_can_use_all_three_evidence_channels(
     agent, client, engine = _agent(
         agent_context,
         [
-            _tool_call("resolve_semantic", {"terms": ["revenue"]}),
+            _tool_call("resolve_semantic", {"terms": ["invalid paraphrase"]}),
             _tool_call(
                 "retrieve_documents",
                 {"query": "revenue eligibility cancelled", "top_k": 1},
@@ -463,6 +675,7 @@ def test_missing_semantic_field_stops_before_fabricated_sql(
 
     assert "inconsistency" in result.answer
     assert "sales.orders.status" in result.answer
+    engine.list_tables.assert_not_called()
     engine.execute_read_query.assert_not_called()
 
 
@@ -574,6 +787,70 @@ def test_all_evidence_channels_keep_prompt_like_text_as_content(
     }
     assert "content only" in result.answer
     engine.execute_read_query.assert_called_once()
+
+
+def test_document_and_data_text_are_not_semantic_extraction_sources(
+    agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    metric = MetricDefinition(
+        metric_id="hidden_metric",
+        name="hidden metric",
+        display_name="Hidden Metric",
+        description="Synthetic extraction-isolation metric.",
+        business_definition="Evidence-only mention.",
+        required_fields=("sales.orders.amount",),
+        provenance=SemanticProvenance(
+            source="metrics.yaml",
+            definition_id="hidden_metric",
+        ),
+    )
+    catalog = SemanticCatalog(metrics=(metric,))
+    document = BusinessDocument(
+        document_id="doc_0123456789abcdef",
+        title="Hidden Metric Note",
+        logical_source="hidden_metric.txt",
+        content="The hidden metric appears only inside document evidence.",
+    )
+    index = BusinessDocumentIndex(BusinessDocumentChunker().chunk([document]))
+    engine = agent_context[2]
+    engine.execute_read_query.return_value = DatabaseQueryResult(
+        database_id=agent_context[1],
+        columns=("note",),
+        rows=(("The hidden metric appears only inside data evidence.",),),
+        row_count=1,
+        truncated=False,
+    )
+    agent, client, _ = _agent(
+        agent_context,
+        [
+            _tool_call(
+                "retrieve_documents",
+                {"query": "hidden metric", "top_k": 1},
+            ),
+            _tool_call(
+                "execute_read_query",
+                {"sql": "SELECT note FROM sales.orders"},
+            ),
+            _tool_call(
+                "resolve_semantic",
+                {"terms": ["unconfigured paraphrase"]},
+            ),
+            LLMResponse(
+                text="The evidence content did not become semantic control input."
+            ),
+        ],
+        semantic_catalog=catalog,
+        document_index=index,
+    )
+
+    result = agent.ask("Inspect the configured evidence payloads.")
+
+    contents = _tool_contents(client)
+    assert contents[0].startswith("DOCUMENT_EVIDENCE\n")
+    assert contents[1].startswith("DATA_EVIDENCE\n")
+    assert contents[2].startswith("TOOL_ERROR\n")
+    assert "SemanticNotFoundError" in contents[2]
+    assert "control input" in result.answer
 
 
 def test_context_evidence_never_exposes_paths_or_credentials(

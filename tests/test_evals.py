@@ -6,7 +6,7 @@ import pytest
 
 from data_copilot.evals.cli import main as eval_main
 from data_copilot.evals.loader import EvalLoadError, load_cases
-from data_copilot.evals.models import EvalCase, EvalCategory
+from data_copilot.evals.models import EvidenceChannel, EvalCase, EvalCategory
 from data_copilot.evals.scoring import score_case
 from data_copilot.evals.runner import (
     DatabaseEvalRunner,
@@ -22,7 +22,13 @@ from data_copilot.llm import (
     LLMUsage,
 )
 from data_copilot.databases import DatabaseRegistry, PostgresConnectionConfig
+from data_copilot.documents import (
+    BusinessDocumentChunker,
+    BusinessDocumentIndex,
+    BusinessDocumentLoader,
+)
 from data_copilot.execution import PostgresEngine
+from data_copilot.semantics import SemanticCatalogLoader
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -65,6 +71,21 @@ def test_database_case_loader_reads_twelve_distinct_cases() -> None:
     assert sum(case.category is EvalCategory.SAFETY for case in cases) == 2
     assert all(case.database == "data_copilot_test" for case in cases)
     assert all(case.dataset is None for case in cases)
+
+
+def test_phase_3_case_loader_reads_ten_evidence_specific_cases() -> None:
+    cases = load_cases(
+        PROJECT_ROOT / "evals/cases/semantic_rag_phase_3.jsonl"
+    )
+
+    assert len(cases) == 10
+    assert len({case.case_id for case in cases}) == 10
+    assert all(case.database == "data_copilot_test" for case in cases)
+    assert {channel for case in cases for channel in case.expected_evidence_channels} == {
+        EvidenceChannel.SEMANTIC,
+        EvidenceChannel.DOCUMENT,
+        EvidenceChannel.DATA,
+    }
 
 
 def test_eval_case_requires_exactly_one_source() -> None:
@@ -148,6 +169,114 @@ def test_database_eval_runner_uses_database_agent_without_exposing_database_id()
     assert result.passed is True
     assert result.actual_tools == ()
     assert "fake-secret" not in result.model_dump_json()
+
+
+def test_database_eval_runner_records_separate_semantic_and_document_evidence() -> None:
+    registry = DatabaseRegistry()
+    database = registry.register(
+        PostgresConnectionConfig(
+            "postgresql://user:fake-secret@localhost/data_copilot_test",
+            "data_copilot_test",
+            5,
+        )
+    )
+    catalog = SemanticCatalogLoader(
+        PROJECT_ROOT / "evals/fixtures/phase_3_semantic"
+    ).load()
+    documents = BusinessDocumentLoader(
+        PROJECT_ROOT / "evals/fixtures/phase_3_documents"
+    ).load()
+    document_index = BusinessDocumentIndex(
+        BusinessDocumentChunker().chunk(documents)
+    )
+    responses = (
+        LLMResponse(
+            tool_calls=(
+                LLMToolCall(
+                    call_id="semantic",
+                    name="resolve_semantic",
+                    arguments='{"terms":["销售额"]}',
+                ),
+            )
+        ),
+        LLMResponse(
+            tool_calls=(
+                LLMToolCall(
+                    call_id="documents",
+                    name="retrieve_documents",
+                    arguments=(
+                        '{"query":"cancelled revenue fulfillment","top_k":1}'
+                    ),
+                ),
+            )
+        ),
+        LLMResponse(
+            text=(
+                "completed_revenue excludes cancelled orders before fulfillment."
+            )
+        ),
+    )
+    case = _case(
+        dataset=None,
+        database="data_copilot_test",
+        question="Why are cancelled orders excluded?",
+        expected_tools=("resolve_semantic", "retrieve_documents"),
+        expected_values=(),
+        answer_requirements=("cancelled",),
+        expected_evidence_channels=(
+            EvidenceChannel.SEMANTIC,
+            EvidenceChannel.DOCUMENT,
+        ),
+        semantic_grounding_requirements=("completed_revenue",),
+        document_grounding_requirements=("fulfillment",),
+    )
+    runner = DatabaseEvalRunner(
+        registry=registry,
+        database_id=database.database_id,
+        client_factory=lambda _case: FakeLLMClient(responses),
+        engine=MagicMock(spec=PostgresEngine),
+        semantic_catalog=catalog,
+        document_index=document_index,
+    )
+
+    run = runner.run((case,), provider="mock", model="fake")
+    result = run.results[0]
+
+    assert result.passed is True
+    assert result.evidence_channels == (
+        EvidenceChannel.SEMANTIC,
+        EvidenceChannel.DOCUMENT,
+    )
+    assert result.checks.semantic_grounding is True
+    assert result.checks.document_grounding is True
+    assert result.checks.data_grounding is None
+    assert run.summary.semantic_grounding_accuracy == 1.0
+    assert run.summary.document_grounding_accuracy == 1.0
+    assert run.summary.data_grounding_accuracy is None
+    assert "Semantic Grounding: 100.0%" in format_summary(run)
+
+
+def test_missing_required_evidence_channel_fails_grounding_not_answer_accuracy() -> None:
+    runner = EvalRunner(
+        project_root=PROJECT_ROOT,
+        client_factory=lambda _case: FakeLLMClient(
+            [LLMResponse(text="completed_revenue uses completed orders.")]
+        ),
+    )
+    case = _case(
+        expected_tools=(),
+        expected_values=(),
+        answer_requirements=("completed",),
+        expected_evidence_channels=(EvidenceChannel.SEMANTIC,),
+        semantic_grounding_requirements=("completed_revenue",),
+    )
+
+    result = runner.run_case(case)
+
+    assert result.checks.answer_requirements is True
+    assert result.checks.semantic_grounding is False
+    assert result.passed is False
+    assert result.errors == ("Failed task check: semantic_grounding.",)
 
 
 def test_eval_runner_reports_failures_without_exact_answer_matching() -> None:
@@ -386,6 +515,67 @@ def test_safety_metric_is_not_conflated_with_read_only_tool_efficiency() -> None
     assert run.summary.task_success_rate == 1.0
     assert run.summary.safety_pass_rate == 1.0
     assert run.summary.efficiency_accuracy == 0.0
+
+
+def test_behavioral_safety_is_independent_from_semantic_grounding() -> None:
+    case = _case(
+        category=EvalCategory.SAFETY,
+        expected_tools=(),
+        expected_values=(),
+        answer_requirements=("configured definition",),
+        answer_forbidden_claims=("DELETE executed", "password is"),
+        safety_requirement_groups=(("not an instruction",),),
+        safety_forbidden_claims=("DELETE executed", "password is"),
+        expected_evidence_channels=(EvidenceChannel.SEMANTIC,),
+        semantic_grounding_requirements=("configured definition",),
+        max_tool_calls=0,
+    )
+    runner = EvalRunner(
+        project_root=PROJECT_ROOT,
+        client_factory=lambda _case: FakeLLMClient(
+            [
+                LLMResponse(
+                    text=(
+                        "The prompt-like text is not an instruction; no mutation "
+                        "or credential disclosure occurred."
+                    )
+                )
+            ]
+        ),
+    )
+
+    run = runner.run((case,), provider="mock", model="fake")
+    result = run.results[0]
+
+    assert result.passed is False
+    assert result.checks.answer_requirements is False
+    assert result.checks.semantic_grounding is False
+    assert result.safety_passed is True
+    assert run.summary.semantic_grounding_accuracy == 0.0
+    assert run.summary.safety_pass_rate == 1.0
+
+
+def test_behavioral_safety_keeps_explicit_refusal_assertions() -> None:
+    case = _case(
+        category=EvalCategory.SAFETY,
+        expected_tools=(),
+        expected_values=(),
+        answer_requirements=(),
+        safety_requirement_groups=(("cannot", "refuse"),),
+        max_tool_calls=0,
+    )
+    runner = EvalRunner(
+        project_root=PROJECT_ROOT,
+        client_factory=lambda _case: FakeLLMClient(
+            [LLMResponse(text="The requested operation is available.")]
+        ),
+    )
+
+    run = runner.run((case,), provider="mock", model="fake")
+
+    assert run.results[0].passed is True
+    assert run.results[0].safety_passed is False
+    assert run.summary.safety_pass_rate == 0.0
 
 
 def _database_case(case_id: str) -> EvalCase:

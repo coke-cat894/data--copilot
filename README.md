@@ -7,12 +7,13 @@ than prompt instructions.
 
 ## Current status
 
-Phase 3.4 — Semantic Agent Integration: **implemented; Phase 3 remains open pending Phase 3.5 evaluation**.
+**Phase 3 — Semantic Layer + RAG ✅ COMPLETE**
 
 Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged, and Phase 2 through Phase 3.3 are frozen. Phase 3.4 optionally gives
+unchanged, and Phase 2 through Phase 3.5 are frozen. Phase 3.4 optionally gives
 the existing single-database Agent selective semantic-resolution and local
 document-retrieval Tools while preserving the Phase 2 SQL execution boundary.
+Phase 4 has not started and requires separate approval.
 
 The current implementation:
 
@@ -56,7 +57,7 @@ The current implementation:
 It does not include EXPLAIN ANALYZE, automatic SQL repair or optimization,
 database writes, cross-database queries, persistent memory, vector/external RAG,
 MCP, connection pooling, fuzzy semantic matching, metric-to-SQL compilation,
-automatic catalog/document conflict resolution, or Phase 3 live evaluation.
+automatic catalog/document conflict resolution, or Phase 4 functionality.
 
 ## Semantic Catalog Foundation
 
@@ -151,6 +152,13 @@ metadata and `DATA_EVIDENCE`. Existing Evidence remains in conversation and
 should be reused. Optional context calls consume the existing five-call budget;
 the final Tool-disabled synthesis and no-answer behavior remain active.
 
+Database Tool execution is intentionally sequential and Evidence-aware. Each
+model decision may cause at most one ordered Tool call to execute; the result is
+appended as new Evidence before the model chooses the next action. Additional
+calls proposed in the same completion are stale, are not executed or counted,
+and are not queued. This trades additional model rounds for more reliable
+planning and budget use without changing `MAX_TOOL_ROUNDS = 5`.
+
 Semantic definitions may inform LLM-generated PostgreSQL, but there is no metric
 compiler. The Agent is instructed to inspect relevant database metadata when
 required fields need verification and to disclose semantic/database
@@ -162,8 +170,57 @@ resolved.
 
 Domain knowledge remains catalog/document configuration, not hardcoded Agent
 logic. All three Evidence channels remain content and cannot override system
-rules or Tool permissions. Phase 3 is not considered complete until Phase 3.5
-live evaluation is separately approved and performed.
+rules or Tool permissions.
+
+## Phase 3.5 evaluation and closure status
+
+Phase 3.5 adds no product capability. It provides a deterministic synthetic
+semantic/document pack, a ten-case Semantic + RAG database eval target,
+evidence-channel traces and separate semantic/document/data grounding metrics,
+and a bounded catalog/PostgreSQL consistency smoke.
+
+The approved one-shot 2026-08-12 DeepSeek `deepseek-v4-flash` run passed 2/10
+cases: 20.0% Task Success, 10.0% Tool Selection, 60.0% Answer Accuracy, 12.5%
+Semantic Grounding, 100.0% Document Grounding, 33.3% Data Grounding, 50.0%
+No-answer, 0.0% automatic Safety, and 60.0% Efficiency. It averaged 3.90 Tool
+calls, 3.10 rounds, and 7184.54 ms per case, with 101,377 provider-reported
+tokens. The original result was preserved and failed cases were not rerun.
+
+Human review found that the injection answer was behaviorally safe—no secret
+disclosure or mutation—but it never retrieved the required semantic channel,
+so the full safety case and Phase 3 acceptance goal failed at that checkpoint.
+The main live failures were exact semantic candidate resolution and metadata
+calls consuming the five-call budget before value-producing SQL. See
+`evals/baselines/phase_3_5_deepseek.md` for the preserved baseline review.
+
+The subsequent approved six-case Semantic Routing focused verification passed
+5/6 cases: 83.3% Task Success, Tool Selection, and Answer Accuracy; 100.0%
+Semantic Grounding, Document Grounding, behavioral Safety, and Efficiency; and
+75.0% Data Grounding. Exact Chinese terminology, monthly semantic-aware SQL,
+the controlled catalog/database mismatch, catalog/document conflict handling,
+and three-channel prompt-injection safety passed. The metric-plus-dimension
+regional query still stopped before answer-producing SQL, leaving Phase 3 open
+at that checkpoint. See
+`evals/baselines/phase_3_5_semantic_routing_focused.md`.
+
+The final sequential Tool execution patch was then verified by 603 passing
+tests plus successful compileall, dependency, and diff checks. In the separately
+approved one-shot `p3_metric_by_region` live verification, the actual path was
+`resolve_semantic → inspect_table → inspect_table → execute_read_query`; the
+query executed successfully and grounded the final result **East = 59,100.00**.
+Automatic Data Grounding passed. Human review passed Semantic Grounding because
+the answer accurately restated the canonical completed-order `quantity ×
+unit_price` definition. The automatic Semantic Grounding failure is preserved
+as a known scorer false negative caused by literal matching of the internal
+`completed_revenue` ID. No product execution blocker remains, so Phase 3 is
+closed. Existing baseline and focused artifacts remain unchanged.
+
+Recorded Phase 3 technical debt, not implemented during closure: lexical BM25
+only; no embeddings or reranker; no persistent document index; no metric SQL
+compiler; no automatic semantic/database synchronization; no automatic
+catalog/document conflict resolver; PostgreSQL only; context/token efficiency;
+quoted-identifier limitations; and the semantic scorer's literal internal-ID
+limitation.
 
 ## Requirements and setup
 

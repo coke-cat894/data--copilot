@@ -10,6 +10,7 @@ from data_copilot.semantics.evidence_models import (
     SemanticEvidence,
 )
 from data_copilot.semantics.loader import SemanticCatalogLoader
+from data_copilot.semantics.mention_extraction import SemanticMentionExtractor
 from data_copilot.semantics.models import (
     DimensionDefinition,
     GlossaryTerm,
@@ -36,6 +37,7 @@ __all__ = [
     "SemanticEvidenceBuilder",
     "SemanticEvidenceFormatter",
     "SemanticMatchType",
+    "SemanticMentionExtractor",
     "SemanticProvenance",
     "SemanticResolution",
     "SemanticResolver",

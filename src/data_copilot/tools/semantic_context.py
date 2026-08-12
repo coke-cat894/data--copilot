@@ -4,12 +4,13 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
-from data_copilot.errors import ToolArgumentError
+from data_copilot.errors import SemanticNotFoundError, ToolArgumentError
 from data_copilot.llm.models import ToolDefinition
 from data_copilot.semantics import (
     SemanticCatalog,
     SemanticEvidence,
     SemanticEvidenceBuilder,
+    SemanticMentionExtractor,
     SemanticResolver,
 )
 from data_copilot.semantics.constants import MAX_SEMANTIC_QUERY_TERMS
@@ -54,6 +55,7 @@ class SemanticResolutionTool:
         self._evidence_builder = evidence_builder or SemanticEvidenceBuilder(catalog)
         if not isinstance(self._evidence_builder, SemanticEvidenceBuilder):
             raise TypeError("evidence_builder must be a SemanticEvidenceBuilder.")
+        self._mention_extractor = SemanticMentionExtractor(catalog)
         self._schema = ToolDefinition(
             name=self.name,
             description=(
@@ -70,7 +72,12 @@ class SemanticResolutionTool:
     def schema(self) -> ToolDefinition:
         return self._schema
 
-    def invoke(self, arguments: str) -> SemanticEvidence:
+    def invoke(
+        self,
+        arguments: str,
+        *,
+        current_user_message: str | None = None,
+    ) -> SemanticEvidence:
         try:
             parsed = _ResolveSemanticArguments.model_validate_json(
                 arguments,
@@ -78,8 +85,44 @@ class SemanticResolutionTool:
             )
         except (ValidationError, ValueError, TypeError):
             raise ToolArgumentError("Tool arguments are invalid.") from None
-        resolutions = self._resolver.resolve_many(parsed.terms)
+        exact_mentions = (
+            self._mention_extractor.extract(current_user_message)
+            if current_user_message is not None
+            else ()
+        )
+        merged_terms = _merge_terms(exact_mentions, parsed.terms)
+        if not exact_mentions:
+            resolutions = self._resolver.resolve_many(merged_terms)
+        else:
+            resolved = list(self._resolver.resolve_many(exact_mentions))
+            exact_normalized = {
+                term.strip().casefold() for term in exact_mentions
+            }
+            for term in merged_terms:
+                if term.strip().casefold() in exact_normalized:
+                    continue
+                try:
+                    resolved.append(self._resolver.resolve(term))
+                except SemanticNotFoundError:
+                    continue
+            resolutions = tuple(resolved)
         return self._evidence_builder.build(resolutions)
+
+
+def _merge_terms(
+    exact_mentions: tuple[str, ...],
+    llm_terms: tuple[str, ...],
+) -> tuple[str, ...]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for term in (*exact_mentions, *llm_terms):
+        normalized = term.strip().casefold()
+        if normalized not in seen:
+            seen.add(normalized)
+            merged.append(term)
+        if len(merged) == MAX_SEMANTIC_QUERY_TERMS:
+            break
+    return tuple(merged)
 
 
 def _strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:

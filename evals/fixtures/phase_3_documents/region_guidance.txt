@@ -1,0 +1,5 @@
+Customer Region Guidance
+
+Region is the geographic label stored on the synthetic customer profile. It is
+used for regional reporting and should not be inferred from free-text notes when
+the profile value exists.

@@ -704,28 +704,22 @@ data quality
 basic anomaly analysis
 ```
 
-### Phase 3 — SQL / Database
+### Phase 3 — Semantic Layer + RAG ✅ COMPLETE
 
 加入：
 
 ```text
-Database Metadata
-Schema
-Read-only SQL
-Explain
-Query Evidence
+Semantic Catalog
+Semantic Resolution and Evidence
+Business-document RAG
+Semantic Agent Integration
+Semantic + RAG Evaluation and Closure
 ```
 
-### Phase 4 — Semantic Layer
+### Phase 4 — Not started
 
-加入：
-
-```text
-Metric Definition
-Data Dictionary
-RAG
-Domain Context
-```
+Scope requires separate approval. Phase 3 closure does not start or predefine
+Phase 4 functionality.
 
 ### Phase 5 — Data Quality
 
@@ -1354,3 +1348,108 @@ permission。Prompt-like/SQL-like text 不得触发 Tool。Optional resources �
 configuration，不硬编码行业规则。本阶段不提供 metric compiler、embedding、vector DB、
 reranker、automatic conflict resolver、multi-agent、MySQL、write 或 Phase 3.5 live eval；Phase 3
 在 3.5 完成前不宣告 closure。
+
+---
+
+## 40. Phase 3.5 Semantic + RAG Live Eval and Closure
+
+Phase 3.5 不增加 Agent capability，只验证 Phase 3.1–3.4 已有架构。评测使用显式 synthetic
+SemanticCatalog、local business-document index、restricted PostgreSQL fixture 和同一个
+`DatabaseCopilotAgent`。Eval result 在既有 Tool trace 之外记录实际出现的 semantic、document、
+data Evidence channel，并分别计算 Semantic Grounding、Document Grounding 和 Data Grounding；
+旧的 forbidden-claim Grounding 继续保留，但不能替代 source-specific 指标。
+
+付费评测前，590 个 pytest tests、compileall、pip check、git diff check 全部通过。Catalog/DB
+smoke 验证正常 metric/dimension field 存在，并把 `commerce.orders.margin_amount` 保持为唯一显式
+controlled mismatch。Phase 2.6 real PostgreSQL safety smoke 继续通过；restricted role 拒绝 INSERT、
+UPDATE、DELETE、CREATE、DROP 和 ALTER。
+
+经用户单独批准，2026-08-12 对 `deepseek-v4-flash` 执行一次 10-case baseline，不 retry、
+不在 baseline 中修改 Prompt 或代码。原始自动结果为：2/10 Task Success、10.0% Tool Selection、
+60.0% Answer Accuracy、12.5% Semantic Grounding、100.0% Document Grounding、33.3% Data
+Grounding、50.0% No-answer、0.0% automatic Safety、60.0% Efficiency；平均 3.90 Tool calls、
+3.10 rounds、7184.54 ms，provider usage 101,377 tokens。
+
+Human review 确认 prompt-injection answer 没有泄露 secret、没有 mutation，文本仍作为 content；
+automatic Safety 失败是因为同一个 case 没有取得 required SEMANTIC_EVIDENCE。这个差异单独记录，
+不改写原始结果，也不把 case 改判为 Phase 3 acceptance pass。主要真实失败是 LLM candidate term
+没有命中 exact configured alias，以及 metadata exploration 消耗五次 Tool budget 后没有执行
+answer-producing SQL。Metric definition、semantic-aware value、controlled mismatch、catalog/document
+conflict 和完整 three-channel injection coverage 因此未达到 closure criteria。
+
+当时 Phase 3 不建议 closure，Phase 4 不得开始。技术债包括 lexical BM25 only、无 embedding/reranker/
+persistent index/metric SQL compiler/automatic semantic-database sync/automatic conflict resolver、
+PostgreSQL only、context/token efficiency、quoted identifier limitation，以及 live run 暴露的 exact
+candidate extraction 和 Tool economy 问题。原始 result 保存在 ignored `evals/results/`，事实摘要与
+human review 保存在 `evals/baselines/phase_3_5_deepseek.md`。
+
+Semantic Routing closure patch 在不增加 capability 的前提下，加入 program-owned exact mention
+extraction：只检查当前 original user message 中的 configured ID、canonical name 和 explicit
+synonym，并与 LLM candidate 合并后交给同一个 deterministic resolver。Evidence、Tool error 和
+model text 不进入 extraction input。Database prompt 同时要求使用 fully-qualified semantic fields
+做最小 metadata verification，并优先 answer-producing SQL。Safety scorer 改为使用独立 behavioral
+safety assertions，不再因为 Semantic/Document/Data Grounding 缺失而自动失败。
+
+Patch 后 600 tests、compileall、pip check 和 git diff check 通过。经单独批准，只对六个之前失败的
+high-signal cases 各执行一次 focused DeepSeek verification；没有 retry，也没有运行完整 ten-case
+suite。原始自动结果为 5/6 Task Success，83.3% Tool Selection，83.3% Answer Accuracy，100.0%
+Semantic Grounding，100.0% Document Grounding，75.0% Data Grounding，100.0% No-answer，
+100.0% behavioral Safety 和 100.0% Efficiency；平均 3.00 Tool calls、2.83 rounds、7465.55 ms，
+provider usage 59,435 tokens。
+
+Exact Chinese metric definition、monthly semantic-aware SQL、controlled semantic/database mismatch、
+catalog/document conflict 和 three-channel prompt injection 通过。Metric + dimension region case 虽然
+成功解析 metric 与 dimension，却在 answer-producing aggregate SQL 前停止，没有得到 East/59,100
+DATA_EVIDENCE。该结果是当时的实际 product failure，不是 scorer false negative，因此在 final
+patch 前 Phase 3 仍不建议 closure；remaining blocker 是 resolved metric + dimension 路径的
+generic Tool planning/budget handling。
+
+Final Sequential Tool Execution patch 只改变 `DatabaseCopilotAgent` 的 orchestration：每次 LLM
+completion 最多执行第一个 ordered Tool call，丢弃同一 completion 中其余尚未执行的 stale calls，
+并在首个 Tool result 成为 Evidence 后请求 fresh model decision。Budget 只计算实际执行的调用；
+proposed batch 大于 remaining budget 不再触发提前 synthesis，只有恰好完成五次实际 Tool execution
+才进入 Tool-disabled final synthesis。这是有意的 evidence-aware sequential trade-off：牺牲同一轮的
+parallel throughput，换取每个后续 Tool choice 都能看到最新 Evidence；不改变 Tool capability、
+Evidence ownership、SQL safety boundary 或 `MAX_TOOL_ROUNDS=5`。
+
+### Final closure evidence
+
+**Phase 3 — Semantic Layer + RAG ✅ COMPLETE**
+
+Final deterministic verification 通过 603 tests、`python -m compileall -q src tests`、`pip check`
+和 `git diff --check`。此前 Semantic Routing focused verification 的原始 automatic result 保持
+5/6，不改写历史 artifact。
+
+经用户单独批准，final `p3_metric_by_region` verification 只执行一次且没有 retry、Prompt tuning
+或代码修改。实际 Tool sequence 为：
+
+```text
+resolve_semantic
+→ inspect_table
+→ inspect_table
+→ execute_read_query
+→ final response
+```
+
+Answer-producing `execute_read_query` 成功执行，DATA_EVIDENCE 支持最终结果
+`East = 59,100.00`，automatic Data Grounding PASS。Answer 准确复述 canonical completed-order
+`quantity × unit_price` definition，因此 human Semantic Grounding PASS。Automatic Semantic
+Grounding 因最终回答没有逐字包含 internal ID `completed_revenue` 而失败；该结果作为 semantic
+scorer literal internal-ID false negative 原样保留，不改写为 automatic pass。没有剩余 product
+execution blocker。
+
+Phase 3 closure 后保留、但本阶段不实现的 technical debt：
+
+- lexical BM25 only；
+- no embeddings/reranker；
+- no persistent document index；
+- no metric SQL compiler；
+- no automatic semantic/database synchronization；
+- no automatic catalog/document conflict resolver；
+- PostgreSQL only；
+- context/token efficiency；
+- quoted identifiers；
+- semantic scorer literal internal-ID limitation。
+
+Existing baseline、focused 和 final eval artifacts 均保留；closure 不修改 eval history。Phase 4
+未开始，仍需单独批准。

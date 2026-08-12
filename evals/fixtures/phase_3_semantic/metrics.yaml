@@ -1,0 +1,50 @@
+version: 1
+type: metrics
+definitions:
+  - metric_id: completed_revenue
+    name: completed revenue
+    display_name: Completed Revenue
+    description: Revenue earned by completed synthetic orders.
+    synonyms:
+      - 销售额
+      - fulfilled revenue
+    business_definition: >-
+      Revenue from completed orders only, calculated as the sum of order-item
+      quantity multiplied by unit price. Pending or cancelled orders are not
+      included. This definition is metadata and is not executable SQL.
+    required_fields:
+      - commerce.orders.status
+      - commerce.order_items.quantity
+      - commerce.order_items.unit_price
+    optional_filters:
+      - commerce.orders.created_at
+    owner: Synthetic Analytics
+    tags:
+      - synthetic
+      - revenue
+  - metric_id: order_count
+    name: order count
+    display_name: Order Count
+    description: Count of synthetic orders regardless of status.
+    synonyms:
+      - number of orders
+      - 订单数
+    business_definition: The number of distinct synthetic order identifiers.
+    required_fields:
+      - commerce.orders.order_id
+    tags:
+      - synthetic
+  - metric_id: legacy_margin
+    name: legacy margin
+    display_name: Legacy Margin
+    description: Intentional Phase 3.5 catalog/database mismatch fixture.
+    synonyms:
+      - 历史利润
+    business_definition: >-
+      A retired synthetic margin definition whose declared input is deliberately
+      absent from the PostgreSQL fixture.
+    required_fields:
+      - commerce.orders.margin_amount
+    tags:
+      - synthetic
+      - intentional-database-mismatch

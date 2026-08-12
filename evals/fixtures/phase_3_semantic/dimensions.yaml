@@ -1,0 +1,15 @@
+version: 1
+type: dimensions
+definitions:
+  - dimension_id: region
+    name: region
+    display_name: Customer Region
+    description: Geographic region assigned to the synthetic customer profile.
+    synonyms:
+      - customer region
+      - 区域
+    source_fields:
+      - commerce.users.region
+    allowed_values_description: Synthetic region labels defined by fixture data.
+    tags:
+      - synthetic

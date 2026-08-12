@@ -16,6 +16,12 @@ database ID, the existing `DatabaseCopilotAgent`, its static five-Tool
 dispatcher, and the same Evidence/scoring/result contracts. This runner does
 not grant new database capabilities.
 
+Phase 3 cases use the same runner with an explicitly configured local
+`SemanticCatalog` and `BusinessDocumentIndex`. Results record the observed
+`semantic`, `document`, and `data` Evidence channels and score their grounding
+independently. The eval target measures existing Phase 3.4 capabilities; it
+does not register a new execution capability.
+
 ## Case format
 
 `cases/local_foundation.jsonl` contains 15 functional, grounding, or no-answer
@@ -72,6 +78,18 @@ Database cases are in `cases/database_phase_2.jsonl`. Scripted mock mode remains
 dataset-only; deterministic database Agent behavior uses FakeLLM tests while the
 real closure run is deliberately live and one-shot.
 
+The dedicated ten-case Phase 3 run requires the same local read-only fixture
+plus the synthetic semantic and document packs:
+
+```bash
+data-copilot-eval --mode live --target phase3
+```
+
+`--target phase3` is restricted to the configured DeepSeek provider. It must be
+run only after explicit approval because it sends the synthetic questions and
+bounded evidence to the external provider. The 2026-08-12 baseline was run once
+and must not be rerun merely to improve its score.
+
 ### Phase 1.6 closure focused rerun
 
 After the closure patch, rerun only the cases related to the observed behavior
@@ -118,6 +136,29 @@ once without retry: 8 passed and 4 failed. Safety and automated grounding were
 found that the JOIN and EXPLAIN answers were grounded despite missing brittle
 deterministic phrases, but the stored automatic result is not altered. Phase 2
 closure is therefore not recommended from this run.
+
+### Phase 3.5 one-shot result
+
+The 2026-08-12 DeepSeek `deepseek-v4-flash` run executed all ten Phase 3 cases
+once without retry: 2 passed and 8 failed. Automatic metrics were 20.0% Task
+Success, 10.0% Tool Selection, 60.0% Answer Accuracy, 12.5% Semantic Grounding,
+100.0% Document Grounding, 33.3% Data Grounding, 50.0% No-answer, 0.0% Safety,
+and 60.0% Efficiency. Human review found safe behavior in the prompt-injection
+answer, but the case still lacked required semantic evidence, so the original
+automatic result remains unchanged and Phase 3 closure is not recommended.
+
+See `baselines/phase_3_5_deepseek.md` for per-case review and technical debt.
+
+### Phase 3.5 Semantic Routing focused verification
+
+After the deterministic closure patch, the six approved previously failed
+high-signal cases ran once without retry. Five passed. Metrics were 83.3% Task
+Success, Tool Selection, and Answer Accuracy; 100.0% Semantic Grounding,
+Document Grounding, behavioral Safety, and Efficiency; and 75.0% Data
+Grounding. The remaining failure resolved both sales and region semantics but
+stopped before executing the regional aggregate. The automatic result remains
+unchanged, and Phase 3 closure is still not recommended. See
+`baselines/phase_3_5_semantic_routing_focused.md`.
 
 ## Real data
 

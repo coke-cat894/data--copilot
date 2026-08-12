@@ -179,28 +179,25 @@ class DatabaseCopilotAgent:
                 usage = response.usage if usage is None else usage + response.usage
             rounds += 1
             if response.tool_calls:
-                requested_count = len(response.tool_calls)
-                if tool_calls_used + requested_count > self._max_tool_rounds:
-                    return self._final_synthesis(
-                        tool_calls_used=tool_calls_used,
-                        rounds=rounds,
-                        usage=usage,
-                    )
+                # Tool results can change which action is useful next. Execute only
+                # the first ordered call and require a fresh evidence-aware decision;
+                # later calls from the same completion are intentionally discarded.
+                tool_call = response.tool_calls[0]
                 self._messages.append(
                     LLMMessage(
                         role=LLMRole.ASSISTANT,
                         content=response.text,
-                        tool_calls=response.tool_calls,
+                        tool_calls=(tool_call,),
                     )
                 )
-                for tool_call in response.tool_calls:
-                    tool_calls_used += 1
-                    self._execute_tool_call(
-                        tool_call.call_id,
-                        tool_call.name,
-                        tool_call.arguments,
-                        tool_calls_used,
-                    )
+                tool_calls_used += 1
+                self._execute_tool_call(
+                    tool_call.call_id,
+                    tool_call.name,
+                    tool_call.arguments,
+                    tool_calls_used,
+                    current_user_message=question,
+                )
                 if tool_calls_used == self._max_tool_rounds:
                     return self._final_synthesis(
                         tool_calls_used=tool_calls_used,
@@ -274,6 +271,8 @@ class DatabaseCopilotAgent:
         name: str,
         arguments: str,
         tool_round: int,
+        *,
+        current_user_message: str,
     ) -> None:
         started = perf_counter()
         row_count: int | None = None
@@ -281,7 +280,10 @@ class DatabaseCopilotAgent:
         truncated: bool | None = None
         try:
             if name == SemanticResolutionTool.name and self._semantic_tool is not None:
-                semantic_evidence = self._semantic_tool.invoke(arguments)
+                semantic_evidence = self._semantic_tool.invoke(
+                    arguments,
+                    current_user_message=current_user_message,
+                )
                 if self._semantic_evidence_formatter is None:
                     raise AgentExecutionError(
                         "Semantic evidence formatter is unavailable."

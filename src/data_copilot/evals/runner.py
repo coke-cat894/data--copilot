@@ -9,11 +9,13 @@ from data_copilot.agent import AgentResult, DataCopilotAgent
 from data_copilot.database_agent import DatabaseCopilotAgent
 from data_copilot.databases import DatabaseRegistry
 from data_copilot.datasets import DatasetRegistry
+from data_copilot.documents import BusinessDocumentIndex
 from data_copilot.errors import DataCopilotError
-from data_copilot.evals.models import EvalCase, EvalResult, EvalRun
-from data_copilot.evals.scoring import score_case, summarize
+from data_copilot.evals.models import EvidenceChannel, EvalCase, EvalResult, EvalRun
+from data_copilot.evals.scoring import score_behavioral_safety, score_case, summarize
 from data_copilot.llm import LLMClient, LLMRole
 from data_copilot.execution import PostgresEngine
+from data_copilot.semantics import SemanticCatalog
 
 
 LLMClientFactory = Callable[[EvalCase], LLMClient]
@@ -48,7 +50,12 @@ class EvalRunner:
             )
             return agent.ask(case.question)
 
-        return _run_case(case, run, lambda: _tool_trace(agent))
+        return _run_case(
+            case,
+            run,
+            lambda: _tool_trace(agent),
+            lambda: _evidence_trace(agent),
+        )
 
     def run(
         self,
@@ -89,12 +96,16 @@ class DatabaseEvalRunner:
         database_id: str,
         client_factory: LLMClientFactory,
         engine: PostgresEngine | None = None,
+        semantic_catalog: SemanticCatalog | None = None,
+        document_index: BusinessDocumentIndex | None = None,
     ) -> None:
         registry.get(database_id)
         self._registry = registry
         self._database_id = database_id
         self._client_factory = client_factory
         self._engine = engine
+        self._semantic_catalog = semantic_catalog
+        self._document_index = document_index
 
     def run_case(self, case: EvalCase) -> EvalResult:
         agent: DatabaseCopilotAgent | None = None
@@ -108,10 +119,17 @@ class DatabaseEvalRunner:
                 self._database_id,
                 self._client_factory(case),
                 engine=self._engine,
+                semantic_catalog=self._semantic_catalog,
+                document_index=self._document_index,
             )
             return agent.ask(case.question)
 
-        return _run_case(case, run, lambda: _tool_trace(agent))
+        return _run_case(
+            case,
+            run,
+            lambda: _tool_trace(agent),
+            lambda: _evidence_trace(agent),
+        )
 
     def run(
         self,
@@ -139,6 +157,7 @@ def _run_case(
     case: EvalCase,
     run_agent: Callable[[], AgentResult],
     tool_trace: Callable[[], tuple[str, ...]],
+    evidence_trace: Callable[[], tuple[EvidenceChannel, ...]],
 ) -> EvalResult:
     started = perf_counter()
     answer: str | None = None
@@ -153,23 +172,25 @@ def _run_case(
     except DataCopilotError as exc:
         runtime_errors.append(f"{type(exc).__name__}: {exc}")
     actual_tools = tool_trace()
-    checks, metric_failures = score_case(case, answer, actual_tools)
+    evidence_channels = evidence_trace()
+    checks, metric_failures = score_case(
+        case, answer, actual_tools, evidence_channels
+    )
     task_errors = list(runtime_errors)
     if not checks.answer_requirements:
         task_errors.append("Failed task check: answer_requirements.")
     if not checks.forbidden_claims:
         task_errors.append("Failed task check: forbidden_claims.")
+    for channel in case.expected_evidence_channels:
+        field = f"{channel.value}_grounding"
+        if getattr(checks, field) is False:
+            task_errors.append(f"Failed task check: {field}.")
     forbidden_tools_used = set(actual_tools) & set(case.forbidden_tools)
     if forbidden_tools_used:
         task_errors.append("Failed task check: forbidden_tool_used.")
     safety_passed = None
     if case.category.value == "safety":
-        safety_passed = (
-            not runtime_errors
-            and checks.answer_requirements
-            and checks.forbidden_claims
-            and not forbidden_tools_used
-        )
+        safety_passed = score_behavioral_safety(case, answer, actual_tools)
     return EvalResult(
         case_id=case.case_id,
         category=case.category,
@@ -183,6 +204,7 @@ def _run_case(
         latency_ms=(perf_counter() - started) * 1000,
         expected_tools=case.expected_tools,
         actual_tools=actual_tools,
+        evidence_channels=evidence_channels,
         checks=checks,
         answer_check_applicable=bool(
             case.expected_values
@@ -190,7 +212,13 @@ def _run_case(
             or case.answer_requirements
             or case.answer_requirement_groups
         ),
-        grounding_check_applicable=bool(case.answer_forbidden_claims),
+        grounding_check_applicable=bool(
+            case.answer_forbidden_claims
+            or case.expected_evidence_channels
+            or case.semantic_grounding_requirements
+            or case.document_grounding_requirements
+            or case.data_grounding_requirements
+        ),
         usage=usage,
         errors=tuple(task_errors),
         metric_failures=metric_failures,
@@ -253,6 +281,9 @@ def format_summary(run: EvalRun) -> str:
         f"Tool Selection: {_percent(summary.tool_selection_accuracy)}",
         f"Answer Accuracy: {_percent(summary.answer_accuracy)}",
         f"Grounding: {_percent(summary.grounding_accuracy)}",
+        f"Semantic Grounding: {_percent(summary.semantic_grounding_accuracy)}",
+        f"Document Grounding: {_percent(summary.document_grounding_accuracy)}",
+        f"Data Grounding: {_percent(summary.data_grounding_accuracy)}",
         f"No-answer: {_percent(summary.no_answer_accuracy)}",
         f"Safety: {_percent(summary.safety_pass_rate)}",
         f"Efficiency: {_percent(summary.efficiency_accuracy)}",
@@ -290,6 +321,26 @@ def _tool_trace(
         if message.role is LLMRole.ASSISTANT
         for call in message.tool_calls
     )
+
+
+def _evidence_trace(
+    agent: DataCopilotAgent | DatabaseCopilotAgent | None,
+) -> tuple[EvidenceChannel, ...]:
+    if agent is None:
+        return ()
+    prefixes = {
+        "SEMANTIC_EVIDENCE\n": EvidenceChannel.SEMANTIC,
+        "DOCUMENT_EVIDENCE\n": EvidenceChannel.DOCUMENT,
+        "DATA_EVIDENCE\n": EvidenceChannel.DATA,
+    }
+    observed: list[EvidenceChannel] = []
+    for message in agent.messages:
+        if message.role is not LLMRole.TOOL or message.content is None:
+            continue
+        for prefix, channel in prefixes.items():
+            if message.content.startswith(prefix) and channel not in observed:
+                observed.append(channel)
+    return tuple(observed)
 
 
 def _percent(value: float | None) -> str:
