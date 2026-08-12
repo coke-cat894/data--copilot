@@ -73,6 +73,12 @@ def test_registry_rejects_unknown_connection_config_type() -> None:
         PostgresConnectionConfig(
             "postgresql://db.example/analytics", "analytics", 61
         ),
+        PostgresConnectionConfig(
+            "postgresql://db.example/analytics", "analytics", 5, 0
+        ),
+        PostgresConnectionConfig(
+            "postgresql://db.example/analytics", "analytics", 5, 120001
+        ),
     ],
 )
 def test_registry_revalidates_programmatic_config(

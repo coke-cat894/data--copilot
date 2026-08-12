@@ -5,6 +5,8 @@ from data_copilot.execution.postgres_engine import (
     PostgresEngine,
     PostgresPingResult,
 )
+from data_copilot.databases.query_models import DatabaseQueryResult
+from data_copilot.databases.plan_models import QueryPlanNode, QueryPlanResult
 from data_copilot.execution.models import (
     BooleanColumnProfile,
     CategoricalColumnProfile,
@@ -43,6 +45,7 @@ __all__ = [
     "ColumnMetadata",
     "DataQualityExecutionResult",
     "DataQualityIssue",
+    "DatabaseQueryResult",
     "DatasetInspection",
     "DatetimeColumnProfile",
     "DuckDBEngine",
@@ -56,6 +59,8 @@ __all__ = [
     "ProfileExecutionResult",
     "PostgresEngine",
     "PostgresPingResult",
+    "QueryPlanNode",
+    "QueryPlanResult",
     "QualityCheck",
     "QualityClassification",
     "TopValue",

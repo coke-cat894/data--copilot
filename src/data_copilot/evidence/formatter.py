@@ -14,7 +14,7 @@ def serialize_evidence(evidence: Evidence) -> str:
     """Serialize one normalized Evidence model without whitespace overhead."""
 
     return json.dumps(
-        evidence.model_dump(mode="json"),
+        evidence.model_dump(mode="json", exclude_none=True),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),

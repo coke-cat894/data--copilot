@@ -101,6 +101,66 @@ class DatabaseConnectionError(DataCopilotError):
     """Raised when a registered database cannot be reached safely."""
 
 
+class DatabaseMetadataError(DataCopilotError):
+    """Raised when PostgreSQL metadata cannot be retrieved safely."""
+
+
+class SchemaNotFoundError(DatabaseMetadataError):
+    """Raised when a requested PostgreSQL schema does not exist."""
+
+
+class TableNotFoundError(DatabaseMetadataError):
+    """Raised when a requested schema-qualified table does not exist."""
+
+
+class SQLValidationError(DataCopilotError):
+    """Base class for rejected untrusted SQL."""
+
+
+class SQLParseError(SQLValidationError):
+    """Raised when SQL is empty, malformed, or cannot be parsed safely."""
+
+
+class UnsafeSQLError(SQLValidationError):
+    """Raised when parsed SQL violates the read-only policy."""
+
+
+class MultipleStatementsError(SQLValidationError):
+    """Raised when SQL contains anything other than one statement."""
+
+
+class SQLExecutionError(DataCopilotError):
+    """Raised when validated read-only SQL cannot execute safely."""
+
+
+class QueryTimeoutError(SQLExecutionError):
+    """Raised when PostgreSQL cancels a query at the program-owned timeout."""
+
+
+class QueryResultTooWideError(SQLExecutionError):
+    """Raised before fetching when a query returns too many columns."""
+
+
+class SQLObjectNotFoundError(SQLExecutionError):
+    """Raised when a query references an unknown table or column."""
+
+
+class SQLAmbiguousColumnError(SQLExecutionError):
+    """Raised when PostgreSQL cannot resolve an unqualified column."""
+
+
+class SQLTypeMismatchError(SQLExecutionError):
+    """Raised when PostgreSQL rejects incompatible SQL data types."""
+
+
+class SQLGroupingError(SQLExecutionError):
+    """Raised when PostgreSQL rejects invalid aggregate/grouping semantics."""
+
+
+class ExplainQueryError(SQLExecutionError):
+    """Raised when a safe program-owned EXPLAIN cannot produce a valid plan."""
+
+
 class UnsupportedDatabaseError(DataCopilotError):
     """Raised when a database type is outside the explicit allowlist."""
 

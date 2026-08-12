@@ -161,4 +161,5 @@ def test_env_example_contains_only_documented_placeholders() -> None:
         "DATA_COPILOT_POSTGRES_DSN="
         "postgresql://username:password@localhost:5432/database_name\n"
         "POSTGRES_CONNECT_TIMEOUT_SECONDS=5\n"
+        "POSTGRES_STATEMENT_TIMEOUT_MS=15000\n"
     )

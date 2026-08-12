@@ -14,6 +14,12 @@ from data_copilot.execution.query_models import (
 from data_copilot.tools.aggregate import AggregateDatasetTool
 from data_copilot.tools.filter import FilterDatasetTool
 from data_copilot.tools.dispatcher import ToolDispatcher
+from data_copilot.tools.database_dispatcher import DatabaseToolDispatcher
+from data_copilot.tools.database_models import (
+    GetRelationshipsResult,
+    InspectTableResult,
+    ListTablesResult,
+)
 from data_copilot.tools.inspect import InspectDatasetTool
 from data_copilot.tools.models import (
     AggregateDatasetResult,
@@ -36,14 +42,18 @@ __all__ = [
     "ColumnSchema",
     "CheckDataQualityTool",
     "DataQualityResult",
+    "DatabaseToolDispatcher",
     "DimensionSpec",
     "FilterCondition",
     "FilterDatasetResult",
     "FilterDatasetTool",
     "FilterOperator",
+    "GetRelationshipsResult",
+    "InspectTableResult",
     "InspectDatasetResult",
     "InspectDatasetTool",
     "MetricSpec",
+    "ListTablesResult",
     "ProfileDatasetResult",
     "ProfileDatasetTool",
     "SampleDatasetResult",

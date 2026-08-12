@@ -17,6 +17,7 @@ from data_copilot.config import (
     MAX_EVIDENCE_ROWS,
 )
 from data_copilot.errors import EvidenceBuildError, EvidenceLimitError
+from data_copilot.databases import DatabaseQueryResult, QueryPlanNode, QueryPlanResult
 from data_copilot.evidence.formatter import EVIDENCE_PREFIX, serialize_evidence
 from data_copilot.evidence.models import (
     Evidence,
@@ -31,6 +32,11 @@ from data_copilot.tools.models import (
     ProfileDatasetResult,
     SampleDatasetResult,
 )
+from data_copilot.tools.database_models import (
+    GetRelationshipsResult,
+    InspectTableResult,
+    ListTablesResult,
+)
 
 
 ToolResult = (
@@ -40,12 +46,18 @@ ToolResult = (
     | FilterDatasetResult
     | AggregateDatasetResult
     | DataQualityResult
+    | ListTablesResult
+    | InspectTableResult
+    | GetRelationshipsResult
+    | DatabaseQueryResult
+    | QueryPlanResult
 )
 
 
 @dataclass(frozen=True, slots=True)
 class _EvidenceDraft:
-    dataset_id: str
+    dataset_id: str | None
+    database_id: str | None
     operation: EvidenceOperation
     summary: dict[str, object]
     columns: tuple[str, ...]
@@ -75,7 +87,7 @@ class EvidenceBuilder:
         self._max_chars = _positive_limit("max_chars", max_chars)
 
     def build(self, result: ToolResult) -> Evidence:
-        """Build bounded evidence for one of the six approved Tool Results."""
+        """Build bounded evidence for one approved typed Tool Result."""
 
         draft = _draft_from_result(result)
         generated_warnings: list[str] = []
@@ -133,6 +145,7 @@ class EvidenceBuilder:
         )
         evidence = _make_evidence(
             dataset_id=draft.dataset_id,
+            database_id=draft.database_id,
             operation=draft.operation,
             summary=summary,
             columns=tuple(columns_value),
@@ -160,6 +173,15 @@ class EvidenceBuilder:
                 and not isinstance(record, (str, bytes))
                 else record
                 for record in records
+            )
+        elif draft.operation is EvidenceOperation.INSPECT_TABLE:
+            allowed_columns = set(columns)
+            records = tuple(
+                record
+                for record in records
+                if not isinstance(record, dict)
+                or record.get("metadata_kind") != "column"
+                or record.get("name") in allowed_columns
             )
         elif draft.column_aligned_records:
             records = records[: self._max_columns]
@@ -216,6 +238,7 @@ def _draft_from_result(result: ToolResult) -> _EvidenceDraft:
     if isinstance(result, InspectDatasetResult):
         return _EvidenceDraft(
             dataset_id=result.dataset_id,
+            database_id=None,
             operation=EvidenceOperation.INSPECT_DATASET,
             summary={
                 "display_name": result.display_name,
@@ -236,6 +259,7 @@ def _draft_from_result(result: ToolResult) -> _EvidenceDraft:
     if isinstance(result, ProfileDatasetResult):
         return _EvidenceDraft(
             dataset_id=result.dataset_id,
+            database_id=None,
             operation=EvidenceOperation.PROFILE_DATASET,
             summary={
                 "display_name": result.display_name,
@@ -287,6 +311,7 @@ def _draft_from_result(result: ToolResult) -> _EvidenceDraft:
         )
         return _EvidenceDraft(
             dataset_id=result.dataset_id,
+            database_id=None,
             operation=EvidenceOperation.CHECK_DATA_QUALITY,
             summary={
                 "display_name": result.display_name,
@@ -302,6 +327,120 @@ def _draft_from_result(result: ToolResult) -> _EvidenceDraft:
             source_row_count=result.row_count,
             source_column_count=result.checked_column_count,
             source_truncated=False,
+            warnings=result.warnings,
+            column_aligned_records=False,
+            tabular_records=False,
+        )
+    if isinstance(result, ListTablesResult):
+        return _EvidenceDraft(
+            dataset_id=None,
+            database_id=result.database_id,
+            operation=EvidenceOperation.LIST_TABLES,
+            summary={"table_count": len(result.tables)},
+            columns=("schema_name", "table_name", "table_type"),
+            records=tuple(table.model_dump(mode="python") for table in result.tables),
+            source_row_count=len(result.tables),
+            source_column_count=3,
+            source_truncated=result.truncated,
+            warnings=result.warnings,
+            column_aligned_records=False,
+            tabular_records=False,
+        )
+    if isinstance(result, InspectTableResult):
+        records = (
+            {
+                "metadata_kind": "primary_key",
+                "columns": list(result.primary_key),
+            },
+        ) + tuple(
+            {
+                "metadata_kind": "foreign_key",
+                **item.model_dump(mode="python"),
+            }
+            for item in result.foreign_keys
+        ) + tuple(
+            {
+                "metadata_kind": "index",
+                **item.model_dump(mode="python"),
+            }
+            for item in result.basic_indexes
+        ) + tuple(
+            {
+                "metadata_kind": "column",
+                **item.model_dump(mode="python"),
+            }
+            for item in result.columns
+        )
+        return _EvidenceDraft(
+            dataset_id=None,
+            database_id=result.database_id,
+            operation=EvidenceOperation.INSPECT_TABLE,
+            summary={
+                "schema_name": result.schema_name,
+                "table_name": result.table_name,
+                "table_type": result.table_type,
+                "column_count": len(result.columns),
+            },
+            columns=tuple(column.name for column in result.columns),
+            records=records,
+            source_row_count=1,
+            source_column_count=len(result.columns),
+            source_truncated=result.truncated,
+            warnings=result.warnings,
+            column_aligned_records=False,
+            tabular_records=False,
+        )
+    if isinstance(result, GetRelationshipsResult):
+        return _EvidenceDraft(
+            dataset_id=None,
+            database_id=result.database_id,
+            operation=EvidenceOperation.GET_RELATIONSHIPS,
+            summary={
+                "schema_name": result.schema_name,
+                "table_name": result.table_name,
+                "relationship_count": len(result.relationships),
+            },
+            columns=(),
+            records=tuple(
+                relationship.model_dump(mode="python")
+                for relationship in result.relationships
+            ),
+            source_row_count=len(result.relationships),
+            source_column_count=0,
+            source_truncated=result.truncated,
+            warnings=result.warnings,
+            column_aligned_records=False,
+            tabular_records=False,
+        )
+    if isinstance(result, DatabaseQueryResult):
+        return _EvidenceDraft(
+            dataset_id=None,
+            database_id=result.database_id,
+            operation=EvidenceOperation.EXECUTE_READ_QUERY,
+            summary={"returned_row_count": result.row_count},
+            columns=result.columns,
+            records=result.rows,
+            source_row_count=result.row_count,
+            source_column_count=len(result.columns),
+            source_truncated=result.truncated,
+            warnings=result.warnings,
+            column_aligned_records=False,
+            tabular_records=True,
+        )
+    if isinstance(result, QueryPlanResult):
+        return _EvidenceDraft(
+            dataset_id=None,
+            database_id=result.database_id,
+            operation=EvidenceOperation.EXPLAIN_QUERY,
+            summary={
+                "root_node_type": result.root.node_type,
+                "plan_node_count": result.node_count,
+            },
+            columns=(),
+            records=_plan_records(result.root),
+            source_row_count=result.node_count,
+            source_column_count=0,
+            source_truncated=result.truncated,
             warnings=result.warnings,
             column_aligned_records=False,
             tabular_records=False,
@@ -324,6 +463,7 @@ def _tabular_draft(
     )
     return _EvidenceDraft(
         dataset_id=result.dataset_id,
+        database_id=None,
         operation=operation,
         summary=summary,
         columns=result.columns,
@@ -335,6 +475,23 @@ def _tabular_draft(
         column_aligned_records=False,
         tabular_records=True,
     )
+
+
+def _plan_records(root: QueryPlanNode) -> tuple[dict[str, object], ...]:
+    records: list[dict[str, object]] = []
+
+    def visit(node: QueryPlanNode, depth: int, parent_node: int | None) -> None:
+        node_number = len(records) + 1
+        record = node.model_dump(mode="python", exclude={"children"})
+        record["node_number"] = node_number
+        record["parent_node"] = parent_node
+        record["depth"] = depth
+        records.append(record)
+        for child in node.children:
+            visit(child, depth + 1, node_number)
+
+    visit(root, 0, None)
+    return tuple(records)
 
 
 def _normalize_value(
@@ -405,7 +562,8 @@ def _normalize_value(
 
 def _make_evidence(
     *,
-    dataset_id: str,
+    dataset_id: str | None,
+    database_id: str | None,
     operation: EvidenceOperation,
     summary: dict[str, JsonValue],
     columns: tuple[str, ...],
@@ -419,6 +577,7 @@ def _make_evidence(
     return Evidence(
         evidence_id=f"ev_{secrets.token_hex(4)}",
         dataset_id=dataset_id,
+        database_id=database_id,
         operation=operation,
         summary=summary,
         columns=columns,

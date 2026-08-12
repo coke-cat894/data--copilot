@@ -2,7 +2,10 @@
 
 import secrets
 
-from data_copilot.databases.constants import MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS
+from data_copilot.databases.constants import (
+    MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+    MAX_POSTGRES_STATEMENT_TIMEOUT_MS,
+)
 from data_copilot.databases.models import (
     Database,
     DatabaseType,
@@ -43,6 +46,10 @@ class DatabaseRegistry:
         ):
             raise DatabaseConfigurationError(
                 "PostgreSQL connect timeout is outside the allowed range."
+            )
+        if not 1 <= connection_config.statement_timeout_ms <= MAX_POSTGRES_STATEMENT_TIMEOUT_MS:
+            raise DatabaseConfigurationError(
+                "PostgreSQL statement timeout is outside the allowed range."
             )
         resolved_display_name = (
             connection_config.database_name

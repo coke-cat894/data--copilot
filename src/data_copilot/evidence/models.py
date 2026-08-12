@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue, model_validator
 
 
 class EvidenceOperation(str, Enum):
@@ -12,6 +12,11 @@ class EvidenceOperation(str, Enum):
     FILTER_DATASET = "filter_dataset"
     AGGREGATE_DATASET = "aggregate_dataset"
     CHECK_DATA_QUALITY = "check_data_quality"
+    LIST_TABLES = "list_tables"
+    INSPECT_TABLE = "inspect_table"
+    GET_RELATIONSHIPS = "get_relationships"
+    EXECUTE_READ_QUERY = "execute_read_query"
+    EXPLAIN_QUERY = "explain_query"
 
 
 class EvidenceMetadata(BaseModel):
@@ -31,7 +36,8 @@ class Evidence(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     evidence_id: str
-    dataset_id: str
+    dataset_id: str | None = None
+    database_id: str | None = None
     operation: EvidenceOperation
     summary: dict[str, JsonValue]
     columns: tuple[str, ...]
@@ -40,3 +46,9 @@ class Evidence(BaseModel):
     evidence_truncated: bool
     warnings: tuple[str, ...]
     metadata: EvidenceMetadata
+
+    @model_validator(mode="after")
+    def validate_source_identity(self) -> "Evidence":
+        if (self.dataset_id is None) == (self.database_id is None):
+            raise ValueError("Evidence requires exactly one source ID.")
+        return self

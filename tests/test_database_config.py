@@ -27,6 +27,7 @@ def test_postgres_config_uses_small_default_timeout() -> None:
     config = read_postgres_config({"DATA_COPILOT_POSTGRES_DSN": DSN})
 
     assert config.connect_timeout_seconds == 5
+    assert config.statement_timeout_ms == 15000
 
 
 @pytest.mark.parametrize(
@@ -46,6 +47,18 @@ def test_postgres_config_uses_small_default_timeout() -> None:
         {
             "DATA_COPILOT_POSTGRES_DSN": DSN,
             "POSTGRES_CONNECT_TIMEOUT_SECONDS": "five",
+        },
+        {
+            "DATA_COPILOT_POSTGRES_DSN": DSN,
+            "POSTGRES_STATEMENT_TIMEOUT_MS": "0",
+        },
+        {
+            "DATA_COPILOT_POSTGRES_DSN": DSN,
+            "POSTGRES_STATEMENT_TIMEOUT_MS": "120001",
+        },
+        {
+            "DATA_COPILOT_POSTGRES_DSN": DSN,
+            "POSTGRES_STATEMENT_TIMEOUT_MS": "slow",
         },
     ],
 )
@@ -69,4 +82,5 @@ def test_env_example_contains_postgres_placeholders_without_real_credentials() -
         "postgresql://username:password@localhost:5432/database_name"
     ) in example
     assert "POSTGRES_CONNECT_TIMEOUT_SECONDS=5" in example
+    assert "POSTGRES_STATEMENT_TIMEOUT_MS=15000" in example
     assert "super-secret" not in example

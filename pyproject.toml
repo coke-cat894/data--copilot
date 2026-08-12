@@ -14,6 +14,7 @@ dependencies = [
     "pydantic>=2.7,<3",
     "psycopg[binary]>=3.2,<4",
     "python-dotenv>=1,<2",
+    "sqlglot>=27,<28",
 ]
 
 [project.scripts]
@@ -27,7 +28,7 @@ test = ["pytest>=8,<9"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"data_copilot.prompts" = ["system.md"]
+"data_copilot.prompts" = ["system.md", "database_system.md"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

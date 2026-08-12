@@ -19,6 +19,7 @@ class PostgresConnectionConfig:
     dsn: str = field(repr=False)
     database_name: str
     connect_timeout_seconds: int
+    statement_timeout_ms: int = 15000
 
 
 class PublicDatabaseMetadata(BaseModel):

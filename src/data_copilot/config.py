@@ -9,9 +9,12 @@ from dotenv import load_dotenv
 
 from data_copilot.databases.constants import (
     DEFAULT_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_POSTGRES_STATEMENT_TIMEOUT_MS,
     MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS,
+    MAX_POSTGRES_STATEMENT_TIMEOUT_MS,
     POSTGRES_CONNECT_TIMEOUT_ENV_VAR,
     POSTGRES_DSN_ENV_VAR,
+    POSTGRES_STATEMENT_TIMEOUT_ENV_VAR,
 )
 from data_copilot.databases.models import PostgresConnectionConfig
 from data_copilot.errors import ConfigurationError, DatabaseConfigurationError
@@ -133,6 +136,12 @@ def read_postgres_config(
             f"{POSTGRES_CONNECT_TIMEOUT_ENV_VAR} must be between 1 and "
             f"{MAX_POSTGRES_CONNECT_TIMEOUT_SECONDS}."
         )
+    statement_timeout_ms = _bounded_int(
+        values,
+        POSTGRES_STATEMENT_TIMEOUT_ENV_VAR,
+        default=DEFAULT_POSTGRES_STATEMENT_TIMEOUT_MS,
+        maximum=MAX_POSTGRES_STATEMENT_TIMEOUT_MS,
+    )
 
     if conninfo_to_dict is None:
         raise DatabaseConfigurationError(
@@ -154,6 +163,7 @@ def read_postgres_config(
         dsn=dsn,
         database_name=database_name,
         connect_timeout_seconds=connect_timeout_seconds,
+        statement_timeout_ms=statement_timeout_ms,
     )
 
 
@@ -169,3 +179,22 @@ def _required_database_value(values: Mapping[str, str], name: str) -> str:
     if value is None or not value.strip():
         raise DatabaseConfigurationError(f"{name} is not configured.")
     return value.strip()
+
+
+def _bounded_int(
+    values: Mapping[str, str],
+    name: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    raw_value = values.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        raise DatabaseConfigurationError(f"{name} must be an integer.") from None
+    if not 1 <= value <= maximum:
+        raise DatabaseConfigurationError(
+            f"{name} must be between 1 and {maximum}."
+        )
+    return value

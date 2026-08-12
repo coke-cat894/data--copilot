@@ -1017,3 +1017,124 @@ session transaction mode 设为 read-only。read-only 设置或 health check 的
 本阶段不提供 schema discovery、SQL generation、SQL parsing、任意 SQL execution、
 EXPLAIN、database Tool、CLI workflow 或 connection pooling。这些能力不能通过
 `PostgresEngine` 的当前接口获得。
+
+---
+
+## 31. Phase 2.2 PostgreSQL Metadata Boundary
+
+Phase 2.2 在 Phase 2.1 的 registry 和 opaque `database_id` 边界上增加三个明确的
+program-side capability：
+
+```text
+list_tables(database_id, optional schema)
+inspect_table(database_id, schema_name, table_name)
+get_relationships(database_id, schema_name, table_name)
+```
+
+这三个 capability 仍属于 Execution / Metadata boundary，尚未注册为 Agent Tool，
+也不进入 Evidence。PostgreSQL table identity 必须始终使用 `schema_name + table_name`，
+schema 和 table lookup 值使用参数绑定，不拼接 identifier。
+
+Metadata SQL 是固定的 program-owned `pg_catalog` query。每次 operation 单独建立连接，
+在第一条 query 前设置 read-only；设置失败必须 fail closed。Public typed result 只包含
+relation type、column type/nullability、声明的 primary key、foreign key、basic index，
+以及相对目标 table 的 inbound/outbound relationship。不得推断 potential key 或业务关系。
+
+所有结果均有确定性上限：200 tables、200 columns、200 relationships 和 100 indexes。
+Query 在适用处额外读取一条记录判断 truncation，结果通过 `truncated` 和 warnings 明确
+报告截断。System schema 默认排除。
+
+本阶段仍不允许 caller/LLM SQL、通用 SQL executor、SQL AST validator、EXPLAIN、
+database Agent Tool、database Evidence、schema inference、MySQL 或 connection pool。
+
+---
+
+## 32. Phase 2.3 Read-only SQL Validation Boundary
+
+Phase 2.3 新增一个独立、无数据库连接的 validation pipeline：
+
+```text
+untrusted SQL text
+→ sqlglot PostgreSQL parser
+→ exactly-one-statement check
+→ whole-tree read-only policy
+→ ValidatedSQL
+```
+
+`SQLValidator.validate(sql)` 只允许 SELECT、read-only set operation、
+`WITH ... SELECT` 和 plain `EXPLAIN SELECT`。Validator 遍历整棵 AST；DDL、DML、
+administrative nodes 即使出现在 writable CTE 或其他 nested position 也必须拒绝。
+`SELECT INTO`、所有 row-locking clause、`EXPLAIN ANALYZE` 和第一版所有 parenthesized
+EXPLAIN options 均 fail closed。
+
+危险函数采用小型明确 denylist，包括 PostgreSQL file/large-object、`dblink*`、sequence
+mutation、advisory lock、backend control、WAL/control、logical message 和 sleep 等明显
+有副作用或资源风险的 capability。此 denylist 不声称穷举 extension 或 user-defined
+volatile function；Phase 2.4 的 read-only session、数据库 read-only credential、timeout、
+result limit 将作为 defense-in-depth，而不是由 AST validator 单独承担全部安全保证。
+
+`ValidatedSQL` 只保存 original SQL、normalized PostgreSQL SQL、statement type 和
+`is_explain`。它不保存 database ID、credential 或 execution result。Phase 2.3 不修改
+PostgresEngine，不提供 execution、rewriting、automatic LIMIT、Agent Tool、Evidence、
+EXPLAIN execution、SQL debugging 或 MySQL dialect。
+
+---
+
+## 33. Phase 2.4 PostgreSQL Agent and Read Execution Boundary
+
+Phase 2.4 增加独立的 single-database Agent path，不改变 Phase 1 dataset Agent：
+
+```text
+Natural-language question
+→ static four-tool Database Dispatcher
+→ metadata and/or LLM-generated PostgreSQL
+→ mandatory SQLValidator
+→ reject EXPLAIN
+→ opaque database_id resolution
+→ per-query read-only connection + statement timeout
+→ bounded typed result
+→ shared Compact Evidence
+→ grounded answer
+```
+
+LLM 只看到 `list_tables`、`inspect_table`、`get_relationships` 和
+`execute_read_query`。`database_id` 由程序绑定，Tool schema 不允许选择 ID、DSN 或
+credential。Validator 不能成为 LLM Tool，也没有未验证的 execution bypass。
+
+`execute_read_query` 必须先验证，再连接。每次 query 都重新设置 read-only，并通过
+program-owned `pg_catalog.set_config(..., is_local=true)` 应用 statement timeout。
+结果最多 50 columns；超过时在 fetch 前失败。最多 fetch 201 rows 并返回 200 rows，
+显式记录 source truncation。Query 使用 program-named server-side cursor，避免 client
+cursor 预先缓冲完整结果。SQL 不做 automatic LIMIT rewriting。
+
+Database query result 与 metadata Tool result 复用现有 EvidenceBuilder、cell normalization、
+total-size enforcement 和 `DATA_EVIDENCE` formatter。Evidence source identity 恰好是
+dataset ID 或 database ID 之一。Source truncation 与 Evidence truncation 继续分离。
+SQL text、credential、connection config、raw driver error 和 stack trace 不进入 Evidence。
+
+本阶段不提供 EXPLAIN execution、performance debugging、automatic repair、planner、
+Semantic Layer、RAG、MySQL、write/DDL、cross-database、pooling 或 multi-database Agent。
+
+---
+
+## 34. Phase 2.5 SQL Explain and Debug Boundary
+
+Phase 2.5 在冻结的 read-query pipeline 上增加第五个 database Agent Tool：
+`explain_query`。调用方只传 underlying read-only query；程序必须先经过原有
+`SQLValidator`，明确拒绝用户提供的 EXPLAIN，再构造固定的
+`EXPLAIN (FORMAT JSON) <normalized query>`。每次操作仍独立解析 opaque
+`database_id`、建立 read-only connection，并应用 transaction-local statement timeout。
+`EXPLAIN ANALYZE` 永远不构造，因此 underlying query 不执行。
+
+PostgreSQL JSON plan 不直接进入 Evidence。程序只保留 node type、relation/alias、join
+type、startup/total cost、estimated rows/width、filter、index name 和 child structure，
+并应用 `MAX_PLAN_NODES=100`、`MAX_PLAN_DEPTH=20`。截断必须同时出现在 typed result、
+warning 和 Evidence provenance。Raw plan、SQL、driver diagnostics、credential 和 connection
+configuration 不得进入 Agent context 或默认日志。
+
+Database Agent 可以直接解释纯 SQL syntax，不要求 Tool。Performance question 使用
+`explain_query`；schema/error/JOIN debugging 可按需组合 metadata 和 bounded read query
+Evidence。Plan node 是 observable fact，不等于 confirmed performance cause。Suggested SQL
+必须标为未验证，除非它确实通过 `execute_read_query` 成功执行。本阶段不提供
+EXPLAIN ANALYZE、automatic repair/rewrite、index recommendation engine、database mutation、
+DBA maintenance、MySQL、RAG 或 Semantic Layer。
