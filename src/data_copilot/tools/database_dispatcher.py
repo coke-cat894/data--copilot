@@ -74,30 +74,24 @@ _ARGUMENT_MODELS: dict[str, type[_Arguments]] = {
 
 _DESCRIPTIONS = {
     "list_tables": (
-        "List bounded non-system PostgreSQL tables and views. Use when the relevant "
-        "table is unknown; reuse existing metadata Evidence instead of repeating it."
+        "List bounded non-system PostgreSQL tables/views when the table is unknown."
     ),
     "inspect_table": (
-        "Inspect one schema-qualified table's exact columns, PostgreSQL types, "
-        "nullability, declared primary/foreign keys, and basic indexes. Use when "
-        "required fields are unknown; never invent fields."
+        "Return one table's exact PostgreSQL columns, types, nullability, declared "
+        "keys, and basic indexes."
     ),
     "get_relationships": (
-        "Return only declared inbound and outbound foreign-key relationships for "
-        "one schema-qualified table. Use when a join path is unknown; do not infer "
-        "relationships from similar names."
+        "Return declared inbound/outbound foreign keys for one table; never infer "
+        "relationships from names."
     ),
     "execute_read_query": (
-        "Execute exactly one PostgreSQL read-only SELECT, WITH SELECT, or read-only "
-        "set-operation query. Mutations and EXPLAIN are forbidden. Results are "
-        "bounded. Compute aggregates in SQL, project only needed fields, and avoid "
-        "SELECT * when a few columns suffice."
+        "Execute exactly one PostgreSQL read-only SELECT/WITH/set query. Mutations "
+        "and EXPLAIN are forbidden; results are bounded. Compute aggregates in SQL, "
+        "project needed fields, and avoid SELECT *."
     ),
     "explain_query": (
-        "Inspect PostgreSQL's bounded estimated plan for exactly one underlying "
-        "read-only query. Use for query-plan or performance questions. Pass SELECT, "
-        "WITH SELECT, or a read-only set operation without EXPLAIN. The program "
-        "constructs EXPLAIN (FORMAT JSON); ANALYZE and query execution are forbidden."
+        "Return PostgreSQL's bounded estimated plan for one read-only query passed "
+        "without EXPLAIN. The program adds EXPLAIN JSON; ANALYZE/execution are forbidden."
     ),
 }
 
@@ -194,6 +188,7 @@ def _strict_json_schema(model: type[_Arguments]) -> dict[str, Any]:
     def make_strict(node: Any) -> None:
         if isinstance(node, dict):
             node.pop("default", None)
+            node.pop("title", None)
             if node.get("type") == "object":
                 properties = node.get("properties", {})
                 if isinstance(properties, dict):

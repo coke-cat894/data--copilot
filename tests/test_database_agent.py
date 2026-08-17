@@ -526,7 +526,7 @@ def test_database_tool_budget_remains_five_and_allows_one_final_synthesis(
             *(
                 _tool_call(
                     "inspect_table",
-                    {"schema_name": "sales", "table_name": "orders"},
+                    {"schema_name": "sales", "table_name": f"orders_{index}"},
                     call_id=f"inspect_{index}",
                 )
                 for index in range(5)
@@ -547,6 +547,29 @@ def test_database_tool_budget_remains_five_and_allows_one_final_synthesis(
         client.requests[-1][0][-1].content or ""
     ).casefold()
     assert engine.inspect_table.call_count == 5
+
+
+def test_phase_5_2_does_not_cache_fresh_database_query_observations(
+    database_agent_context: tuple[DatabaseRegistry, str, MagicMock],
+) -> None:
+    query = {"sql": "SELECT COUNT(*) AS row_count FROM sales.orders"}
+    agent, _, engine = _agent(
+        database_agent_context,
+        [
+            _tool_call("execute_read_query", query, call_id="first"),
+            _tool_call("execute_read_query", query, call_id="fresh"),
+            LLMResponse(text="The latest observed row count is 100."),
+        ],
+    )
+
+    result = agent.ask("Observe the row count twice because freshness is required.")
+
+    assert result.tool_calls_used == 2
+    assert engine.execute_read_query.call_count == 2
+    assert not any(
+        (message.content or "").startswith("EVIDENCE_REUSE\n")
+        for message in agent.messages
+    )
 
 
 def test_tool_batch_executes_only_first_call_then_fresh_decision_wins(
@@ -705,7 +728,7 @@ def test_final_synthesis_tool_call_is_not_executed_and_fails_safe(
             *(
                 _tool_call(
                     "list_tables",
-                    {"schema": None},
+                    {"schema": f"schema_{index}"},
                     call_id=f"list_{index}",
                 )
                 for index in range(5)

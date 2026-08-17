@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -379,6 +380,40 @@ def test_deepseek_client_requires_key_and_wraps_provider_details(
             (_tool_definition(),),
         )
     assert "secret-provider-detail" not in str(captured.value)
+
+
+@pytest.mark.parametrize("value", [-1, True, 1, 1.5])
+def test_deepseek_retry_configuration_fails_closed(value: object) -> None:
+    with pytest.raises(LLMClientError, match="max_retries"):
+        DeepSeekLLMClient(
+            model="deepseek-v4-flash",
+            sdk_client=_chat_sdk(FakeChatCompletions([])),
+            max_retries=value,  # type: ignore[arg-type]
+        )
+
+
+def test_provider_sdk_retries_are_disabled_at_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[dict[str, object]] = []
+
+    def make_client(**arguments: object) -> SimpleNamespace:
+        created.append(arguments)
+        return SimpleNamespace()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(OpenAI=make_client),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+
+    OpenAILLMClient(model="test-openai")
+    DeepSeekLLMClient(model="test-deepseek")
+
+    assert len(created) == 2
+    assert all(arguments["max_retries"] == 0 for arguments in created)
 
 
 def test_provider_usage_is_normalized_without_changing_protocol() -> None:

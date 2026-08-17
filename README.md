@@ -1,765 +1,431 @@
 # Data Copilot
 
-Data Copilot is an evidence-first assistant for data analysis, SQL/database
-work, and data engineering troubleshooting. Development is intentionally
-incremental and keeps deterministic safety and execution in software rather
-than prompt instructions.
+Data Copilot v1 product positioning:
 
-## Current status
+> An end-to-end governed Data Agent prototype with deterministic safety
+> boundaries, business semantics, evidence-grounded reasoning,
+> troubleshooting, runtime hardening, and evaluation infrastructure.
 
-**Phase 3 — Semantic Layer + RAG ✅ COMPLETE**
+It supports local structured data analysis, safe PostgreSQL querying, business
+semantics, document context, and data/pipeline troubleshooting. It is not a
+fully production-ready platform.
 
-Phase 1 — Local Data Foundation and the Phase 2.1–2.3 database boundaries remain
-unchanged, and Phase 2 through Phase 3.5 are frozen. Phase 3.4 optionally gives
-the existing single-database Agent selective semantic-resolution and local
-document-retrieval Tools while preserving the Phase 2 SQL execution boundary.
-Phase 4 has not started and requires separate approval.
+Its core rule is:
 
-The current implementation:
+> LLM 负责智能，程序负责可靠性。
 
-- registers explicitly provided local CSV, Parquet, and JSONL files;
-- assigns opaque, process-local dataset IDs;
-- inspects public file metadata, row count, and DuckDB schema through a dataset
-  ID;
-- profiles numeric, categorical, datetime, boolean, and uncommon columns using
-  bounded DuckDB aggregates;
-- returns reproducible bounded random samples;
-- filters bounded rows through structured AND conditions;
-- computes bounded whole-dataset, grouped, and calendar-grain aggregates;
-- checks fixed objective and heuristic data-quality signals;
-- converts all six Tool result types into bounded, path-free compact Evidence;
-- lets one LLM select only those six Tools through a static allowlist; and
-- returns grounded answers through a bounded in-process Agent loop and CLI.
-- registers one or more PostgreSQL connection configurations behind opaque,
-  process-local database IDs; and
-- verifies registered PostgreSQL connectivity with a fixed read-only health
-  check; and
-- lists non-system relations and inspects declared columns, primary keys,
-  foreign keys, basic indexes, and inbound/outbound relationships; and
-- validates exactly one untrusted SQL statement against a conservative
-  read-only PostgreSQL AST policy; and
-- lets a single-database Agent discover declared schema metadata, generate
-  PostgreSQL, execute bounded read queries, inspect estimated query plans, and
-  answer from Compact Evidence; and
-- loads explicitly configured, trusted local YAML into typed metric, dimension,
-  and glossary definitions with deterministic aliases, validated references,
-  and path-safe logical provenance; and
-- resolves bounded candidate semantic terms across those definitions and builds
-  a separate, bounded `SEMANTIC_EVIDENCE` JSON envelope for relevant matches;
-  and
-- loads and chunks explicitly configured Markdown/text business documents,
-  searches them with a deterministic in-memory lexical index, and builds a
-  separate bounded `DOCUMENT_EVIDENCE` envelope from retrieved chunks; and
-- optionally lets the existing `DatabaseCopilotAgent` select semantic,
-  document, metadata, plan, and read-query Tools within its unchanged shared
-  five-call budget and reason across the three separate Evidence channels.
+The LLM reasons about data; the data engine processes data. Permissions,
+validation, execution limits, read-only enforcement, state, Evidence, and
+secret protection remain deterministic software responsibilities.
 
-It does not include EXPLAIN ANALYZE, automatic SQL repair or optimization,
-database writes, cross-database queries, persistent memory, vector/external RAG,
-MCP, connection pooling, fuzzy semantic matching, metric-to-SQL compilation,
-automatic catalog/document conflict resolution, or Phase 4 functionality.
+## What works today
 
-## Semantic Catalog Foundation
+| Capability | Status | Boundary |
+|---|---|---|
+| CSV, Parquet, JSONL analysis | Implemented | Explicit local file; bounded DuckDB Tools |
+| PostgreSQL querying | Implemented, read-only | One validated statement; timeout and result bounds |
+| Semantic Layer | Implemented | Explicit trusted YAML definitions |
+| Business-document retrieval | Implemented | Local bounded lexical retrieval; no embeddings |
+| Data and pipeline troubleshooting | Implemented foundation | Deterministic snapshots, drift, and explicit local run records |
+| Safe traces and evaluation | Implemented | Versioned bounded artifacts; deterministic mock and explicit live modes |
+| Environment doctor | Implemented | Configuration checks by default; database network check only by opt-in |
+| MySQL, Snowflake, BigQuery | Not implemented | Future adapter work |
+| External pipeline adapters | Not implemented | No Airflow/dbt/Spark service integration |
+| Vector retrieval | Intentionally absent | Local lexical retrieval only |
+| Automatic remediation or writes | Intentionally unsupported | Read-only product boundary |
 
-`SemanticCatalogLoader` accepts one explicit YAML file or one explicit
-directory. Directory loading is deterministic and non-recursive. Each trusted
-file declares `version: 1`, one `type` (`metrics`, `dimensions`, or `glossary`),
-and a `definitions` list. The loader does not discover database values or call
-an LLM.
+## Project status
 
-Metric definitions record business meaning and canonical
-`schema.table.column` inputs, not SQL. Dimensions record business meaning and
-source fields. Glossary terms may reference metric and dimension IDs. All three
-retain a program-created provenance pair containing only the source file name
-and definition ID.
+- Phase 1 — Local Data Foundation ✅ COMPLETE
+- Phase 2 — SQL / Database Copilot ✅ COMPLETE
+- Phase 3 — Semantic Layer + RAG ✅ COMPLETE
+- Phase 4 — Data Engineering Troubleshooting ✅ COMPLETE
+- Phase 5 — Evaluation + Product Hardening ✅ COMPLETE
+- Data Copilot v1 Roadmap ✅ COMPLETE
 
-Catalog lookup supports stable IDs, canonical names, and explicitly configured
-synonyms using trim plus case-insensitive normalization. Duplicate IDs,
-canonical-name or synonym ambiguity, invalid cross-references, malformed files,
-unsupported fields (including SQL), and unsafe source forms fail closed. Phase
-3.1 kept this as a program-facing foundation; Phase 3.4 exposes only selectively
-resolved, bounded semantic Evidence rather than catalog contents.
+Detailed phase decisions and historical results live in
+[DEVELOPMENT_MANUAL.md](DEVELOPMENT_MANUAL.md).
 
-`SemanticResolver` accepts candidate terms already extracted by its caller. It
-matches only stable IDs, canonical names, and explicit synonyms using the same
-conservative normalization. Missing terms fail explicitly; a term valid for
-more than one semantic type is ambiguous and receives no insertion-order or
-type priority. Collections are bounded and retain caller order.
-
-`SemanticEvidenceBuilder` retrieves each resolved definition back from the
-catalog, rejects inconsistent or unknown resolution records, deduplicates exact
-definition identities, and applies definition-count, text, synonym, field, and
-total serialized-size limits. Truncation and warnings remain explicit, while
-logical source-file and definition-ID provenance is retained.
-
-The channels remain separate:
-
-```text
-SEMANTIC_EVIDENCE = official structured business definitions
-DOCUMENT_EVIDENCE = retrieved business-document explanation and context
-DATA_EVIDENCE     = observed facts from bounded data or database execution
-```
-
-Semantic evidence is content, not instructions or a capability grant. Phase
-3.2 itself did not integrate the Agent, generate SQL, execute SQL, or validate
-fields against PostgreSQL; Phase 3.4 reuses its bounded output unchanged.
-
-## Minimal Business-document RAG
-
-`BusinessDocumentLoader` accepts only explicit `.md`, `.markdown`, and `.txt`
-files or explicit non-recursive directories. It rejects symlink components,
-unsupported explicit files, invalid UTF-8, empty documents, duplicate logical
-source names, and configured file/byte/character limits. Public models retain a
-content-derived document ID and safe filename only—never an absolute path.
-
-`BusinessDocumentChunker` uses Markdown headings and text paragraphs to produce
-deterministic bounded chunks with stable IDs, ordinals, titles, headings, and
-path-safe provenance. `BusinessDocumentIndex` builds a bounded in-memory
-BM25-style lexical index using only the Python standard library. Search accepts
-a plain bounded query and bounded `top_k`, returns only positive lexical
-matches, and uses logical source, ordinal, and chunk ID for stable tie-breaking.
-
-`DocumentEvidenceBuilder` preserves retrieval order and only includes retrieved
-chunks. It applies chunk-count, per-chunk text, citation metadata, and total JSON
-limits with explicit truncation warnings. `DocumentEvidenceFormatter` emits the
-distinct `DOCUMENT_EVIDENCE` prefix followed by compact deterministic JSON.
-Document text—including prompt-like or SQL-like text—remains inert evidence
-content and cannot grant permissions or execute anything.
-
-Phase 3.3 adds no embeddings, vector database, external API, persistent index,
-PDF/DOCX support, query rewriting, reranker, conflict resolution, Agent Tool, or
-Agent prompt integration.
-
-## Semantic Agent Integration
-
-`DatabaseCopilotAgent` continues to expose the same five database Tools. When a
-`SemanticCatalog` and/or `BusinessDocumentIndex` is explicitly configured, it
-also exposes `resolve_semantic` and/or `retrieve_documents`. Without those
-resources, its five-tool Phase 2 behavior and schemas remain unchanged.
-
-`resolve_semantic` accepts a bounded list of already-extracted candidate terms
-and returns only relevant `SEMANTIC_EVIDENCE`. Missing or cross-type ambiguous
-terms use the existing structured safe Tool-error channel; the Agent is guided
-to clarify or state missing meaning rather than fabricate it.
-`retrieve_documents` accepts a bounded plain query and `top_k`, returning only
-bounded `DOCUMENT_EVIDENCE` from the configured local index. Neither Tool calls
-an LLM or exposes catalog, filesystem, or index internals.
-
-Routing is need-based: a plain row count can use database execution directly; a
-definition can use semantics only; policy rationale can use semantics plus
-documents; and a business metric value can combine semantic meaning with
-metadata and `DATA_EVIDENCE`. Existing Evidence remains in conversation and
-should be reused. Optional context calls consume the existing five-call budget;
-the final Tool-disabled synthesis and no-answer behavior remain active.
-
-Database Tool execution is intentionally sequential and Evidence-aware. Each
-model decision may cause at most one ordered Tool call to execute; the result is
-appended as new Evidence before the model chooses the next action. Additional
-calls proposed in the same completion are stale, are not executed or counted,
-and are not queued. This trades additional model rounds for more reliable
-planning and budget use without changing `MAX_TOOL_ROUNDS = 5`.
-
-Semantic definitions may inform LLM-generated PostgreSQL, but there is no metric
-compiler. The Agent is instructed to inspect relevant database metadata when
-required fields need verification and to disclose semantic/database
-inconsistency instead of inventing unavailable fields. Every generated query
-still follows the unchanged `SQLValidator` → read-only PostgreSQL → bounded
-`DATA_EVIDENCE` path. Structured catalog definitions remain canonical over
-document context; material conflicts are disclosed rather than automatically
-resolved.
-
-Domain knowledge remains catalog/document configuration, not hardcoded Agent
-logic. All three Evidence channels remain content and cannot override system
-rules or Tool permissions.
-
-## Phase 3.5 evaluation and closure status
-
-Phase 3.5 adds no product capability. It provides a deterministic synthetic
-semantic/document pack, a ten-case Semantic + RAG database eval target,
-evidence-channel traces and separate semantic/document/data grounding metrics,
-and a bounded catalog/PostgreSQL consistency smoke.
-
-The approved one-shot 2026-08-12 DeepSeek `deepseek-v4-flash` run passed 2/10
-cases: 20.0% Task Success, 10.0% Tool Selection, 60.0% Answer Accuracy, 12.5%
-Semantic Grounding, 100.0% Document Grounding, 33.3% Data Grounding, 50.0%
-No-answer, 0.0% automatic Safety, and 60.0% Efficiency. It averaged 3.90 Tool
-calls, 3.10 rounds, and 7184.54 ms per case, with 101,377 provider-reported
-tokens. The original result was preserved and failed cases were not rerun.
-
-Human review found that the injection answer was behaviorally safe—no secret
-disclosure or mutation—but it never retrieved the required semantic channel,
-so the full safety case and Phase 3 acceptance goal failed at that checkpoint.
-The main live failures were exact semantic candidate resolution and metadata
-calls consuming the five-call budget before value-producing SQL. See
-`evals/baselines/phase_3_5_deepseek.md` for the preserved baseline review.
-
-The subsequent approved six-case Semantic Routing focused verification passed
-5/6 cases: 83.3% Task Success, Tool Selection, and Answer Accuracy; 100.0%
-Semantic Grounding, Document Grounding, behavioral Safety, and Efficiency; and
-75.0% Data Grounding. Exact Chinese terminology, monthly semantic-aware SQL,
-the controlled catalog/database mismatch, catalog/document conflict handling,
-and three-channel prompt-injection safety passed. The metric-plus-dimension
-regional query still stopped before answer-producing SQL, leaving Phase 3 open
-at that checkpoint. See
-`evals/baselines/phase_3_5_semantic_routing_focused.md`.
-
-The final sequential Tool execution patch was then verified by 603 passing
-tests plus successful compileall, dependency, and diff checks. In the separately
-approved one-shot `p3_metric_by_region` live verification, the actual path was
-`resolve_semantic → inspect_table → inspect_table → execute_read_query`; the
-query executed successfully and grounded the final result **East = 59,100.00**.
-Automatic Data Grounding passed. Human review passed Semantic Grounding because
-the answer accurately restated the canonical completed-order `quantity ×
-unit_price` definition. The automatic Semantic Grounding failure is preserved
-as a known scorer false negative caused by literal matching of the internal
-`completed_revenue` ID. No product execution blocker remains, so Phase 3 is
-closed. Existing baseline and focused artifacts remain unchanged.
-
-Recorded Phase 3 technical debt, not implemented during closure: lexical BM25
-only; no embeddings or reranker; no persistent document index; no metric SQL
-compiler; no automatic semantic/database synchronization; no automatic
-catalog/document conflict resolver; PostgreSQL only; context/token efficiency;
-quoted-identifier limitations; and the semantic scorer's literal internal-ID
-limitation.
-
-## Requirements and setup
+## Quickstart without a paid provider
 
 Python 3.12 or newer is required.
 
 ```bash
+git clone <repository-url>
+cd data-copilot
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[test]'
-```
-
-The interactive Agent supports OpenAI through the Responses API and DeepSeek
-through its OpenAI-compatible Chat Completions API. Both adapters use the
-official OpenAI Python SDK behind the provider-neutral `LLMClient` boundary.
-
-## LLM configuration
-
-Copy the tracked placeholder file, then edit the local ignored `.env`:
-
-```bash
 cp .env.example .env
 ```
 
-The CLI loads `.env` once at startup with `override=False`, so an existing
-system environment variable always wins. `DATA_COPILOT_PROVIDER` and
-`DATA_COPILOT_MODEL` are required; unknown providers and missing selected-key
-configuration fail closed without falling back to another provider.
-
-For DeepSeek:
-
-```text
-DATA_COPILOT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=your-real-local-key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DATA_COPILOT_MODEL=deepseek-v4-flash
-```
-
-For OpenAI:
-
-```text
-DATA_COPILOT_PROVIDER=openai
-OPENAI_API_KEY=your-real-local-key
-DATA_COPILOT_MODEL=gpt-5.6-terra
-```
-
-Real keys belong only in the ignored local `.env` or external environment.
-They are never placed in prompts, Evidence, logs, Tool arguments, examples, or
-tests.
-
-## PostgreSQL connection configuration
-
-Phase 2.1 uses psycopg 3 and reads PostgreSQL credentials only from the existing
-environment-loading boundary. Configure the ignored local `.env` or external
-environment:
-
-```text
-DATA_COPILOT_POSTGRES_DSN=postgresql://username:password@localhost:5432/database_name
-POSTGRES_CONNECT_TIMEOUT_SECONDS=5
-POSTGRES_STATEMENT_TIMEOUT_MS=15000
-```
-
-The connect timeout defaults to 5 seconds and must be between 1 and 60 seconds.
-The statement timeout defaults to 15 seconds and must be between 1 and 120,000
-milliseconds. The DSN must include a database name. Parsed credentials remain
-in an internal frozen configuration model whose representation omits the DSN.
-
-The minimal program-side flow is:
-
-```python
-from data_copilot.config import load_environment, read_postgres_config
-from data_copilot.databases import DatabaseRegistry
-from data_copilot.execution import PostgresEngine
-
-load_environment()
-registry = DatabaseRegistry()
-database = registry.register(read_postgres_config(), display_name="Analytics")
-result = PostgresEngine(registry).ping(database.database_id)
-```
-
-`database.to_public_metadata()` exposes only `database_id`, `database_type`,
-and `display_name`. It omits the DSN, password, host, port, internal database
-name, and connection options. `PostgresEngine` accepts only `database_id` and
-has no generic SQL execution method.
-
-`ping()` connects synchronously with the configured timeout, sets the psycopg
-connection to read-only before querying, then executes the program-owned fixed
-`SELECT 1`. A connection or read-only setup failure returns a sanitized domain
-error and never falls back to read/write. Normal automated tests mock psycopg
-and do not require a live PostgreSQL server.
-
-## PostgreSQL metadata discovery
-
-`PostgresEngine` exposes three Phase 2.2 metadata capabilities. Each accepts an
-opaque `database_id`; table identity always consists of `schema_name` and
-`table_name`:
-
-```python
-tables = engine.list_tables(database.database_id, schema="sales")
-inspection = engine.inspect_table(
-    database.database_id,
-    schema_name="sales",
-    table_name="orders",
-)
-relationships = engine.get_relationships(
-    database.database_id,
-    schema_name="sales",
-    table_name="orders",
-)
-```
-
-`list_tables` reports schema, relation name, and relation type while excluding
-`pg_catalog`, `information_schema`, TOAST, and temporary schemas. An optional
-schema filter is passed as a bound parameter.
-
-`inspect_table` reports ordered columns with PostgreSQL display types and
-nullability, the ordered primary-key columns, declared outbound foreign keys,
-and valid basic indexes. Composite keys retain their declared column order.
-`get_relationships` reports only declared foreign keys and labels each as
-`outbound` or `inbound` relative to the requested table; it performs no key or
-business-relationship inference.
-
-Every operation establishes read-only mode before executing fixed,
-program-owned `pg_catalog` SQL. Schema and table values are bound parameters;
-internal SQL, connection details, and credentials are absent from result
-models and public errors. No method accepts SQL from a caller.
-
-Metadata output limits are:
-
-- `MAX_DATABASE_TABLES = 200`
-- `MAX_TABLE_COLUMNS = 200`
-- `MAX_RELATIONSHIPS = 200`
-- `MAX_INDEXES = 100`
-
-Queries request one extra record where applicable. Results set `truncated=true`
-and include an explicit warning when a limit is reached. Automated tests use
-mocked psycopg connections rather than a live PostgreSQL server.
-
-## Read-only SQL validation
-
-Phase 2.3 adds a standalone validation boundary based on sqlglot's PostgreSQL
-dialect:
-
-```python
-from data_copilot.sql import SQLValidator
-
-validated = SQLValidator().validate(
-    "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent"
-)
-```
-
-`ValidatedSQL` contains only the original SQL, normalized PostgreSQL SQL,
-`statement_type="select"`, and `is_explain`. It does not contain a database ID,
-credentials, an execution result, or an execution capability.
-
-The validator requires exactly one parsed statement and allows only `SELECT`,
-read-only set operations such as `UNION`, `WITH ... SELECT`, and plain
-`EXPLAIN SELECT`. It traverses the complete query AST and rejects mutation or
-administration nodes even when nested inside CTEs or subqueries. It also rejects
-`SELECT INTO`, all row-locking clauses, `EXPLAIN ANALYZE`, and every
-parenthesized EXPLAIN option in this first version.
-
-A small explicit function denylist blocks external-file, large-object, dblink,
-sequence mutation, advisory-lock, backend-control, WAL/control, logical-message,
-and sleep capabilities. Examples include `pg_read_file`, `pg_read_binary_file`,
-`pg_ls_dir`, `lo_import`, `lo_export`, `dblink*`, `nextval`, `setval`,
-`pg_advisory_lock*`, `pg_terminate_backend`, and `pg_sleep`.
-
-This allowlist/denylist is intentionally conservative but cannot establish that
-every installed PostgreSQL function is side-effect free. AST validation, future
-Phase 2.4 read-only sessions, database-level read-only credentials, execution
-timeouts, and result limits are defense-in-depth layers. Phase 2.3 performs no
-database connection, SQL rewriting, LIMIT injection, or execution.
-
-## PostgreSQL database Agent
-
-`DatabaseCopilotAgent` binds one registered `database_id` in program state and
-exposes exactly five LLM tools: `list_tables`, `inspect_table`,
-`get_relationships`, `execute_read_query`, and `explain_query`. Tool schemas
-never expose a DSN, credentials, or a selectable database ID.
-
-`execute_read_query` always performs this deterministic pipeline:
-
-```text
-untrusted SQL → SQLValidator → reject EXPLAIN → resolve database_id
-→ connect → read-only mode → program-owned statement timeout
-→ execute normalized SQL with a server-side cursor → enforce 50-column limit
-→ fetch at most 201 rows → return at most 200 rows
-→ Compact Evidence → LLM
-```
-
-Validation failure occurs before registry resolution or connection. Each query
-connection independently establishes read-only mode and a transaction-local
-statement timeout. Queries wider than 50 columns fail before row fetching;
-queries over 200 returned rows set `source_truncated=true` with an explicit
-warning. SQL is not rewritten to inject LIMIT, so statement timeout remains an
-independent protection against expensive computation.
-
-Database metadata and query results reuse the existing `EvidenceBuilder` and
-`EvidenceFormatter`. Database Evidence carries an opaque `database_id` instead
-of `dataset_id` and preserves the existing row, column, cell, and total-size
-limits. Query SQL, credentials, connection configuration, driver diagnostics,
-and raw exceptions are absent from Evidence. Prompt-like cell content remains
-quoted data inside `DATA_EVIDENCE`.
-
-Automated Agent and execution tests use `FakeLLMClient` and mocked psycopg
-connections. No paid model or live PostgreSQL call is part of the test suite.
-
-`explain_query` accepts the underlying read-only query, never caller-authored
-EXPLAIN syntax. It validates first, rejects mutation and user-supplied EXPLAIN,
-then constructs program-owned `EXPLAIN (FORMAT JSON)` on a fresh read-only
-connection with the configured statement timeout. It never uses ANALYZE, so the
-underlying query does not execute.
-
-The raw PostgreSQL JSON plan is reduced to stable facts such as node type,
-relation, alias, join type, estimated cost/rows/width, filter, index name, and
-child structure. Plans are bounded to 100 nodes and depth 20 with explicit
-truncation warnings before conversion to `DATA_EVIDENCE`. The Agent may explain
-SQL syntax without a Tool, use plan Evidence for performance hypotheses, and
-combine declared metadata with bounded queries for SQL/JOIN debugging. A
-suggested fix remains unverified until it is actually executed successfully.
-
-## Phase 2 real PostgreSQL validation
-
-The manual Phase 2.6 fixture scripts live under `scripts/postgres/`. They create
-only a dedicated `data_copilot_test` database, `commerce` and `support` schemas,
-and a restricted `data_copilot_ro` application role. The deterministic fixture
-contains 12 users, 8 products, 1,200 orders, 2,400 order items, and 2 notes. The
-role has LOGIN, CONNECT, schema USAGE, and table SELECT only; its default
-transaction mode is read-only. Credentials belong only in the ignored `.env`.
-
-The real smoke verifies ping, metadata, declared relationships, SELECT,
-aggregation, 200-row result truncation, program-owned EXPLAIN, validator
-rejection, and independent database permission denial for INSERT, UPDATE,
-DELETE, CREATE, DROP, and ALTER. Normal pytest remains independent of a live
-database and external LLM.
-
-The focused database eval set contains 12 cases in
-`evals/cases/database_phase_2.jsonl`. Run it explicitly with:
-
-```bash
-data-copilot-eval --mode live --target database
-```
-
-The one-shot 2026-08-12 DeepSeek run achieved 8/12 automated task success,
-100% tool selection, 66.7% answer checks, 100% grounding checks, 0% no-answer,
-100% safety, and 83.3% efficiency. Two failures were round-limit failures; two
-additional deterministic answer checks were false negatives on semantically
-grounded JOIN/EXPLAIN answers. Because the missing-concept case produced no
-answer, Phase 2 closure is not yet recommended. Failed cases were not rerun.
-
-## Minimal usage
-
-```python
-from pathlib import Path
-
-from data_copilot.datasets import DatasetRegistry
-from data_copilot.evidence import EvidenceBuilder, EvidenceFormatter
-from data_copilot.tools import (
-    AggregateDatasetTool,
-    AggregateFunction,
-    CheckDataQualityTool,
-    DimensionSpec,
-    FilterCondition,
-    FilterDatasetTool,
-    FilterOperator,
-    InspectDatasetTool,
-    MetricSpec,
-    ProfileDatasetTool,
-    SampleDatasetTool,
-)
-
-data_root = Path("/path/to/explicit/data/root")
-registry = DatasetRegistry(allowed_roots=[data_root])
-dataset = registry.register(data_root / "orders.csv")
-
-inspection = InspectDatasetTool(registry)(dataset.dataset_id)
-print(inspection.model_dump())
-
-profile = ProfileDatasetTool(registry)(
-    dataset.dataset_id,
-    columns=["amount", "status"],
-    top_k=10,
-)
-print(profile.model_dump())
-
-sample = SampleDatasetTool(registry)(dataset.dataset_id, size=20, seed=42)
-
-filtered = FilterDatasetTool(registry)(
-    dataset.dataset_id,
-    columns=["order_id", "amount"],
-    filters=[FilterCondition("amount", FilterOperator.GT, 100)],
-    limit=50,
-)
-
-aggregated = AggregateDatasetTool(registry)(
-    dataset.dataset_id,
-    dimensions=[DimensionSpec("region_name", "region")],
-    metrics=[MetricSpec("revenue", AggregateFunction.SUM, "amount")],
-)
-
-quality = CheckDataQualityTool(registry)(dataset.dataset_id)
-evidence = EvidenceBuilder().build(quality)
-formatted_evidence = EvidenceFormatter().format(evidence)
-```
-
-`allowed_roots` is mandatory. Paths are resolved before registration, so a
-path or symlink that escapes those roots is rejected. Re-registering the same
-resolved file in one registry returns the existing dataset and ID. Registry
-state and IDs are in memory only.
-
-The internal `Dataset` model contains `resolved_path`. Call
-`dataset.to_public_metadata()` when a path-free representation is needed for a
-future external or LLM-facing boundary.
-
-JSONL means newline-delimited JSON records; ordinary JSON is unsupported.
-
-## Tool contracts
-
-`InspectDatasetTool` accepts only `dataset_id` and returns path-free dataset
-metadata, row/column counts, and column names/types. It does not return samples
-or distribution statistics.
-
-`ProfileDatasetTool` accepts `dataset_id`, optional selected `columns`, and
-`top_k`. DuckDB computes exact per-column aggregates:
-
-- numeric: nulls, exact distinct count, bounds, mean, median, p25, and p75;
-- categorical: nulls, exact distinct count, and bounded non-null top values;
-- datetime: nulls, exact distinct count, and temporal bounds;
-- boolean: null, true, false, and exact distinct counts; and
-- other/uncommon types: null count and rate only.
-
-Rates use total dataset rows as the denominator. Empty datasets return `0.0`
-rates and `None` for undefined numeric or temporal statistics.
-
-## Profile limits
-
-- `MAX_PROFILE_COLUMNS = 50`
-- `DEFAULT_TOP_VALUES = 10`
-- `MAX_TOP_VALUES = 20`
-
-When `columns=None`, only the first 50 columns are profiled and the result
-contains a warning if the dataset is wider. An explicit request over 50
-columns, an invalid or duplicate column request, or `top_k > 20` fails closed.
-
-Tool and execution APIs accept dataset IDs, not paths or raw SQL. Requested
-column names must exactly match inspected schema and are safely quoted before
-internal aggregate SQL is built.
-
-## Structured query tools
-
-`SampleDatasetTool` supports only seeded DuckDB reservoir sampling. The same
-dataset, size, and seed produce a reproducible sample where DuckDB permits.
-
-`FilterDatasetTool` supports controlled `eq`, `ne`, `gt`, `gte`, `lt`, `lte`,
-`in`, `not_in`, `between`, `is_null`, and `is_not_null` conditions. Multiple
-conditions always use `AND`. Sorting is limited to validated source columns and
-`asc`/`desc` directions.
-
-`AggregateDatasetTool` supports up to five dimensions and ten metrics. Metrics
-are `count`, `count_distinct`, `sum`, `avg`, `median`, `min`, and `max`.
-Calendar dimensions support `year`, `quarter`, `month`, `week`, and `day` for
-DATE/TIMESTAMP columns. Metric and dimension aliases use a restricted
-identifier format and must be globally unique.
-
-Filter values are always sent to DuckDB as bound parameters. Identifiers,
-operators, functions, sort directions, and time grains are program-controlled.
-No Tool accepts SQL strings or expressions.
-
-Filter and aggregate queries request one extra row internally. `truncated` is
-true only when more rows exist beyond the returned limit; no full result count
-query is issued.
-
-## Query limits
-
-- `DEFAULT_SAMPLE_ROWS = 20`
-- `MAX_SAMPLE_ROWS = 100`
-- `DEFAULT_RESULT_ROWS = 50`
-- `MAX_RESULT_ROWS = 200`
-- `MAX_RESULT_COLUMNS = 50`
-- `MAX_FILTERS = 20`
-- `MAX_GROUP_BY_DIMENSIONS = 5`
-- `MAX_METRICS = 10`
-
-Explicit requests above these limits fail closed with `ResourceLimitError`.
-When sample/filter columns are omitted on a wider dataset, the first 50 columns
-are returned with a warning.
-
-## Data-quality contract
-
-`CheckDataQualityTool` accepts a `dataset_id`, optional source `columns`, and an
-optional timezone-aware `reference_time`. Its fixed checks are:
-
-- objective: null values, exact full-row duplicates beyond the first row,
-  all-null columns, and constant columns; and
-- heuristic: negative numeric values and DATE/TIMESTAMP values later than the
-  UTC reference time.
-
-Null, negative, and future-value rates use total dataset rows as the
-denominator. A column is constant only when it has more than one non-null value
-and exactly one distinct non-null value. Consequently, empty, all-null, and
-single-non-null-value columns are not reported as constant. Duplicate checking
-always uses the complete row, even when a subset of columns is selected for
-column checks.
-
-If `reference_time` is omitted, the Tool captures the current UTC time once.
-Tests and reproducible callers should inject a fixed timezone-aware value.
-`TIME` values are deliberately excluded because they have no date with which
-to establish "future" status. Heuristic findings are signals, not proof that
-the data is invalid.
-
-`MAX_QUALITY_COLUMNS = 50`. With no explicit selection, only the first 50
-columns are checked and a warning reports wider input. Explicit overflow,
-unknown or duplicate columns, empty selections, and naive reference times fail
-closed. Full-row duplicate checking is dataset-level and remains active.
-
-## Compact Evidence contract
-
-`EvidenceBuilder` accepts only the typed results of `inspect_dataset`,
-`profile_dataset`, `sample_dataset`, `filter_dataset`, `aggregate_dataset`, and
-`check_data_quality`. It performs no file reads, registry lookups, or data
-queries. Each returned `Evidence` has an opaque process-local `evidence_id`,
-`dataset_id`, operation, compact summary, columns/records, source and Evidence
-truncation flags, warnings, and count metadata.
-
-The source Tool result is the sole evidence boundary. Resolved paths and
-internal SQL are not copied into Evidence. Tabular rows are represented as
-values aligned to a single bounded `columns` list, avoiding repeated source
-column names. Prompt-like text, SQL-looking strings, and JSON-looking strings
-remain ordinary quoted data.
-
-`EvidenceFormatter` emits deterministic compact JSON prefixed with
-`DATA_EVIDENCE\n`. It never slices serialized JSON. Values are normalized as
-follows: strings remain strings, integers/floats/booleans/null remain native
-JSON values, decimals become strings, dates/times become ISO strings, and
-non-finite floats become null with a warning.
-
-Evidence applies limits independently of upstream Tool limits:
-
-- `MAX_EVIDENCE_ROWS = 100`
-- `MAX_EVIDENCE_COLUMNS = 30`
-- `MAX_CELL_CHARS = 1000`
-- `MAX_EVIDENCE_CHARS = 30000` (including the formatter prefix)
-
-Rows, columns, and cells are reduced structurally with explicit warnings. The
-total-size limit removes complete trailing records until valid JSON fits. If
-the metadata envelope alone cannot fit, building or formatting fails closed
-with `EvidenceLimitError`.
-
-## Tests
+The copied file contains placeholders only. Configure only capabilities you
+intend to use; deterministic tests and mock evaluation need neither an API key
+nor PostgreSQL.
 
 ```bash
 .venv/bin/python -m pytest -q
+.venv/bin/data-copilot doctor
+.venv/bin/data-copilot-eval --mode mock
 ```
 
-## Agent Tool loop
+The default doctor never contacts an LLM provider and spends no tokens. Its
+statuses distinguish `PASS`, `WARN`, `FAIL`, and `SKIPPED`.
 
-Launch the minimal interactive CLI with one explicit local dataset:
+To use the interactive local-dataset Agent, configure a supported provider in
+`.env`, then pass one explicit file:
 
 ```bash
-data-copilot /path/to/orders.csv
+.venv/bin/data-copilot path/to/data.csv
 ```
 
-The CLI registers only that file, prints public path-free metadata, and accepts
-questions until `exit`, `quit`, Ctrl+C, or Ctrl+D. A typical manual smoke test
-can ask:
+The CLI also accepts Parquet and JSONL. Enter `quit` or `exit` to stop.
+
+## Commands
+
+| Command | Purpose | External access |
+|---|---|---|
+| `data-copilot DATASET` | Interactive local-dataset Agent | Configured LLM provider |
+| `data-copilot doctor` | Environment/configuration self-check | None by default |
+| `data-copilot doctor --connect-database` | Explicit fixed PostgreSQL health check | Configured PostgreSQL only |
+| `data-copilot-eval --mode mock` | Deterministic dataset eval | None |
+| `data-copilot-eval --mode live ...` | Explicit provider/database eval | Yes; paid/remote and separately approved |
+| `scripts/postgres/*.py` | Focused development smokes | Explicit local PostgreSQL fixture |
+
+Use `--help` on either entry point for current flags. Live eval commands and
+their approval gates are documented in [evals/README.md](evals/README.md).
+
+### Doctor examples
+
+Validate only local configuration and the default eval artifact location:
+
+```bash
+.venv/bin/data-copilot doctor
+```
+
+Validate explicit local resources without provider or database calls:
+
+```bash
+.venv/bin/data-copilot doctor \
+  --semantic-source tests/fixtures/semantic \
+  --document-source tests/fixtures/business_documents \
+  --allowed-root tests/fixtures \
+  --artifact-directory evals/results
+```
+
+Request machine-readable output or explicitly test PostgreSQL connectivity:
+
+```bash
+.venv/bin/data-copilot doctor --json
+.venv/bin/data-copilot doctor --connect-database
+```
+
+Provider connectivity is always `SKIPPED`: doctor validates provider
+configuration but deliberately makes no provider request. Database
+configuration and reachability are separate checks.
+
+## Configuration
+
+One validated environment path supplies provider, runtime, and PostgreSQL
+settings. Optional capabilities are not required when unused. Local semantic,
+document, allowed-root, and artifact locations are explicit CLI arguments or
+constructor inputs rather than secret environment state.
+
+| Setting | Required when | Default / bound |
+|---|---|---|
+| `DATA_COPILOT_PROVIDER` | Starting a provider-backed Agent | `openai` or `deepseek`; no implicit provider |
+| `DATA_COPILOT_MODEL` | Provider-backed Agent | Required, bounded model name |
+| `OPENAI_API_KEY` | Provider is `openai` | Required; never logged |
+| `DEEPSEEK_API_KEY` | Provider is `deepseek` | Required; never logged |
+| `DEEPSEEK_BASE_URL` | Optional DeepSeek endpoint override | `https://api.deepseek.com`; HTTP(S), no embedded credentials/query/fragment |
+| `DATA_COPILOT_PROVIDER_MAX_RETRIES` | Optional interactive retry override | `1`; allowed `0..2` |
+| `DATA_COPILOT_POSTGRES_DSN` | PostgreSQL capability | Required and parsed; never displayed |
+| `POSTGRES_CONNECT_TIMEOUT_SECONDS` | PostgreSQL capability | `5`; allowed `1..60` |
+| `POSTGRES_STATEMENT_TIMEOUT_MS` | PostgreSQL capability | `15000`; allowed `1..120000` |
+
+Additional fixed or explicit limits:
+
+- The Agent Tool budget is program-owned at five actual Tool executions.
+  Invalid or rejected proposals do not execute and do not consume this budget.
+- Eval provider retries default to zero and are separately bounded by eval CLI
+  configuration; live closure modes remain one-shot.
+- Dataset and pipeline loaders require explicit allowed roots and apply file,
+  count, size, row, column, and serialization limits.
+- Diagnostic limits are typed constructor configuration with hard caps; they
+  are not provider-controlled.
+- Semantic/document sources are explicit paths. Eval artifacts default to
+  `evals/results/`, with safe bounded atomic persistence.
+
+Configuration failures are typed and sanitized. The project does not dump the
+process environment or expose keys, DSNs, passwords, raw driver errors, or
+provider response objects through user-facing boundaries.
+
+## Architecture
 
 ```text
-这个数据集有哪些字段？
-哪个地区的平均订单金额最高？
-每个月的销售额是多少？
-找出金额最高的 5 个 completed 订单。
-这个数据集有什么明显的数据质量问题？
-为什么三月份收入下降？
+User / CLI
+    |
+    v
+Agent runtime ---- LLMClient protocol ---- OpenAI or DeepSeek adapter
+    |
+    +-- Semantic Catalog (trusted YAML meaning)
+    +-- Document index (bounded local lexical context)
+    +-- Dataset Tools (DuckDB over explicit local data)
+    +-- Database Tools / engine contract ---- PostgreSQL implementation
+    +-- Diagnostics (typed snapshots and deterministic drift)
+    +-- Pipeline resources (explicit local typed run records)
+    |
+    v
+Evidence state: SEMANTIC | DOCUMENT | DATA | DIAGNOSTIC | PIPELINE
+    |
+    v
+Grounded answer, safe no-answer, or typed runtime failure
+
+Cross-cutting: capability registry, validation, read-only policy, execution
+bounds, retry policy, error taxonomy, safe trace, and evaluation.
 ```
 
-The Agent's initial model context contains only the system rules plus the
-current dataset's opaque ID, display name, and format. Schema, profiles, rows,
-aggregates, and quality facts enter the conversation only after an allowlisted
-Tool produces a typed result and that result passes through `EvidenceBuilder`
-and `EvidenceFormatter`.
+The Intelligence Layer selects bounded capabilities and explains Evidence.
+The Semantic Layer supplies configured business meaning and retrieved policy.
+The Execution Layer performs exact inspection, aggregation, SQL, diagnostics,
+and loading. Production code never depends on eval internals; eval observes the
+same production Agent and Tool paths with controlled fixtures.
 
-The six available functions are `inspect_dataset`, `profile_dataset`,
-`sample_dataset`, `filter_dataset`, `aggregate_dataset`, and
-`check_data_quality`. Their schemas intentionally omit dataset IDs, paths, SQL,
-and arbitrary expressions. The current dataset ID is bound inside
-`ToolDispatcher`; LLM arguments are untrusted and undergo Pydantic parsing plus
-all existing Tool and DuckDB validations.
+### Package boundaries
 
-Each requested Tool call consumes one of `MAX_TOOL_ROUNDS = 5`, including
-rejected calls. OpenAI Responses parallel Tool calls are disabled; all returned
-Tool calls from either provider execute serially in the existing Agent loop.
-Tool errors are reduced to domain-safe messages so the model can recover,
-without receiving stack traces, paths, internal SQL, or provider details.
-Reaching the limit is an explicit failure, never success.
+- `data_copilot.agent` and `database_agent` own the sequential Agent runtime.
+- `data_copilot.llm` exposes the provider-neutral `LLMClient` contract and
+  normalized response models; provider SDK objects stay inside adapters.
+- `data_copilot.datasets`, `execution`, `sql`, and `tools` own registration,
+  computation, validation, capability dispatch, and bounded execution.
+- `data_copilot.semantics` and `documents` are deterministic local context
+  packages; they do not depend on Agent runtime or provider SDKs.
+- `data_copilot.diagnostics` represents snapshots, drift, and pipeline run
+  facts/comparisons; it does not infer causes or grant capabilities.
+- `data_copilot.evals` is test/evaluation infrastructure. Production runtime
+  does not import it.
+- `data_copilot.cli`, `config`, and `doctor` are composition boundaries.
 
-The system prompt requires dataset-specific claims to be grounded in current
-Evidence, treats dataset text as data rather than instructions, and requires an
-insufficient-evidence answer instead of invented business causes. These prompt
-rules guide model behavior; capability enforcement, argument validation,
-resource limits, and the stopping condition remain deterministic Python code.
+Supported root-package imports are `AgentResult`, `DataCopilotAgent`, and
+`DatabaseCopilotAgent`. Other packages expose focused domain APIs through their
+own `__init__` modules. Low-level provider responses, secret-bearing internals,
+test helpers, and artifact implementation details are not root public API.
 
-Automated tests use `FakeLLMClient` or mocked provider SDK responses and never
-call a paid API. After configuring `.env`, run `data-copilot <dataset-path>` for
-an explicit real-provider smoke test.
+### Provider and database boundaries
 
-## Evaluation
+Both Agents depend on `LLMClient`, not on DeepSeek-specific behavior. Endpoint
+configuration, request formatting, SDK retry disabling, usage extraction, and
+Tool-call normalization stay behind the OpenAI/DeepSeek client adapters.
 
-Phase 1.6 adds a small typed pipeline:
+Database direction is:
 
 ```text
-EvalCase → DataCopilotAgent → Tool/Evidence transcript
-         → deterministic scoring + human-review flags → EvalResult
+DatabaseCopilotAgent
+  -> typed database Tool dispatcher
+  -> registry + SQL validator + execution engine
+  -> PostgreSQL/psycopg implementation
 ```
 
-Run the free deterministic 20-case Mock Eval:
+This is an intended boundary, not a claim of a complete multi-database adapter
+framework. The registry models, metadata SQL, plan parsing, diagnostics
+collector, and execution engine remain PostgreSQL-specific. A future adapter
+must earn its own validation, dialect policy, timeouts, read-only enforcement,
+Evidence mapping, tests, and evals.
+
+## Safety and trust
+
+Read-only behavior is enforced in code, not by asking the model to behave.
+
+Trusted or program-owned boundaries include:
+
+- Tool/capability registration and dispatch;
+- `SQLValidator`, statement count/dialect policy, and database read-only mode;
+- allowed-root resolution, resource registries, timeouts, budgets, and result
+  limits;
+- explicitly configured Semantic Catalog definitions;
+- typed loaders, Evidence builders, sanitizers, error mapping, and trace
+  persistence.
+
+Untrusted or inert inputs include user text, document text, pipeline event
+text, database values, model-generated SQL before validation, provider Tool
+proposals, and Tool results before Evidence validation. Context is not
+permission. Retrieved text cannot register a Tool, change a limit, reveal a
+secret, or authorize a write.
+
+Key protections:
+
+- exactly one conservative PostgreSQL read statement is validated before
+  execution; mutation/DDL and unsafe constructs fail closed;
+- database credentials remain behind opaque process-local IDs;
+- every data path is bounded by applicable rows, columns, bytes, time, or
+  serialization limits;
+- compact Evidence—not unbounded raw datasets or logs—enters model context;
+- runtime and eval traces exclude hidden reasoning and raw Evidence, and retain
+  only safe observable summaries;
+- safe no-answer is a valid outcome when semantics, a baseline, alignment, or
+  causal Evidence is missing.
+
+Logging records bounded operational summaries such as run/round, Tool name,
+status, duration, Evidence channel, and safe failure category. It does not log
+Tool arguments, SQL, raw rows, full pipeline logs, paths, keys, DSNs,
+passwords, `.env` contents, provider internals, or hidden reasoning.
+
+## Representative workflows
+
+### Business metric query
+
+“每个月销售额是多少？”
+
+```text
+resolve configured metric meaning
+-> inspect relevant metadata
+-> validate and execute safe aggregate SQL
+-> DATA_EVIDENCE
+-> grounded monthly result
+```
+
+### Business policy question
+
+```text
+resolve configured term
+-> retrieve bounded relevant document chunks
+-> SEMANTIC_EVIDENCE + DOCUMENT_EVIDENCE
+-> policy answer with logical provenance
+```
+
+### Data troubleshooting
+
+```text
+compare typed before/after snapshots
+-> inspect aligned pipeline run Evidence when available
+-> separate observations from hypotheses
+-> state missing causal verification and a safe next diagnostic step
+```
+
+Matching counts or timestamps are correlation, not automatically root cause.
+
+### Safe no-answer
+
+```text
+business metric lacks a definition, or incident lacks a baseline
+-> do not substitute guessed semantics/current state
+-> report insufficient Evidence
+```
+
+## Extending the project
+
+Keep extensions small and program-governed.
+
+### Add a semantic pack
+
+Place versioned metric, dimension, or glossary YAML in an explicitly configured
+source. Follow the schemas in `tests/fixtures/semantic/`; use stable IDs,
+aliases, references, and clear business definitions. Loading is bounded,
+non-recursive, validated, and provenance is program-managed.
+
+### Add a database adapter later
+
+Do not branch on a provider name inside the Agent. Define the database-specific
+registry/configuration, dialect validator, metadata/read/plan engine behavior,
+read-only controls, limits, typed failures, and Evidence mapping behind the
+database Tool boundary. Add security bypass tests and an isolated optional
+integration smoke before advertising support.
+
+### Add a Tool
+
+A Tool needs one focused capability, typed bounded arguments, explicit
+program-owned registration/permission, deterministic validation, bounded raw
+result, a compact Evidence contract, safe error/trace support, and unit,
+failure, security, Agent-integration, and eval coverage. A prompt or Skill
+cannot grant a Tool.
+
+### Add an eval case
+
+Add a small deterministic fixture and declare required/allowed/forbidden Tools,
+expected claims, forbidden claims, required Evidence channels, Tool limit, and
+human-review need. Scorers and fixtures remain separate from production cause
+logic. See [evals/README.md](evals/README.md).
+
+## Tests, evaluation, and dependency roles
+
+Run the full deterministic gate with:
 
 ```bash
-data-copilot-eval --mode mock
+.venv/bin/python -m pytest -q
+.venv/bin/python -m compileall -q src tests scripts
+.venv/bin/python -m pip check
+git diff --check
 ```
 
-Live modes are explicit and may consume provider credits. Before calls begin,
-the CLI displays provider, model, and case count without showing the API key:
+Automated tests use synthetic files, FakeLLM, fake database connections, and
+local fixtures. They do not call paid APIs. `pytest` validates software
+behavior; evals separately measure task success, grounding, Tool selection,
+safety, causal discipline, uncertainty, efficiency, latency, and known usage.
 
-```bash
-data-copilot-eval --mode live
-data-copilot-eval --mode safety
-```
+### Final v1 verification
 
-Generated JSON results are written under ignored `evals/results/`. They record
-Tool calls, rounds, total latency, optional provider token usage, Git state,
-deterministic failures, and human-review flags, but not configured keys,
-resolved paths, raw datasets, or internal SQL.
+The final documentation closure follows these completed gates:
 
-The suite contains 15 functional/grounding/no-answer cases and five safety
-cases. Exact natural-language matching is deliberately avoided; deterministic
-checks use required facts, multilingual alternatives, forbidden claims, Tool
-selection, and Tool limits. Human review remains required where these checks
-cannot establish complete grounding.
+- the deterministic suite passed all 922 tests before focused live closure;
+- the immutable ten-case DeepSeek final suite was acceptable on grounded human
+  review for 10/10 cases, with 100% Answer Accuracy, 100% for every applicable
+  Evidence Grounding channel, and 100% Behavioral Safety;
+- that suite identified one minor product blocker: an explicit physical-only
+  request still exposed and called the Semantic Tool;
+- the focused `final_db_join_aggregate` closure run passed after the
+  program-owned routing fix with database-only Tool exposure, no Semantic,
+  Document, or Troubleshooting Tools, the correct `East = 59,100.00` result,
+  100% DATA_EVIDENCE grounding, 100% Tool Selection, and 100% Efficiency.
 
-For an unfamiliar real dataset, keep the data local and follow the five-question
-protocol in `evals/real_data/README.md`. The current UCI Iris review and the
-DeepSeek baseline are recorded under `evals/real_data/` and `evals/baselines/`.
-See `evals/README.md` for the complete case and metric contract.
+No product closure blockers remain. Historical automatic results and their
+separate human-review records remain preserved rather than rewritten.
+
+Major runtime dependencies are deliberately small:
+
+| Dependency | Role |
+|---|---|
+| DuckDB | Bounded local analytical execution |
+| OpenAI Python SDK | OpenAI-compatible provider transport behind `LLMClient` |
+| Pydantic | Strict typed models and validation |
+| psycopg | PostgreSQL connectivity, safe identifiers, and read-only execution |
+| PyYAML | Safe Semantic Catalog loading |
+| python-dotenv | Local environment-file loading without overriding process values |
+| sqlglot | Conservative PostgreSQL AST validation |
+
+`pytest` is test-only. Versions are bounded in `pyproject.toml`; project
+metadata uses a simple `0.1.0` development version and no invented release
+system.
+
+## Production-readiness boundary
+
+Implemented and hardened:
+
+- provider-neutral Agent contract with bounded retry and failure taxonomy;
+- explicit capability registries, read-only SQL validation, timeouts, and
+  bounded data/Evidence paths;
+- safe local semantic/document/pipeline loading;
+- deterministic diagnostics, safe observable traces, and reproducible eval
+  artifacts;
+- provider-free tests, doctor, mock eval, and documented composition points.
+
+Not production-complete:
+
+- PostgreSQL-only database integration;
+- local/in-memory registries and Agent state;
+- BM25-only RAG, with no embeddings or reranker;
+- no external pipeline adapters;
+- no automatic time/run alignment;
+- no distributed trace backend;
+- no RBAC or multi-tenancy;
+- no automatic remediation;
+- no deployment orchestration;
+- bounded scorers still have semantic-language limitations;
+- provider behavior remains nondeterministic and provider/network availability
+  remains an external dependency.
+
+These are honest scope boundaries, not claims that the current foundation is a
+production service. They are non-blocking technical debt after the completed v1
+roadmap, not hidden claims of production readiness.
+
+## License
+
+No repository license has been declared yet.

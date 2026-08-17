@@ -155,37 +155,28 @@ _ARGUMENT_MODELS: dict[str, type[_Arguments]] = {
 
 _DESCRIPTIONS = {
     "inspect_dataset": (
-        "Return the current dataset's shape and exact schema. Use for schema "
-        "questions, missing-concept confirmation, or recovery after an unknown-"
-        "field error. Never use as preflight when the user or conversation "
-        "Evidence already provides the required exact field names."
+        "Return bounded shape and exact schema. Use for schema questions, "
+        "missing-field confirmation, or unknown-field recovery."
     ),
     "profile_dataset": (
-        "Compute bounded descriptive statistics and value distributions for "
-        "selected columns. Use only when the question needs a distribution, "
-        "statistic, or category understanding; never use to confirm fields or "
-        "filter values before aggregation or quality checks."
+        "Return bounded distributions and descriptive statistics for selected "
+        "columns."
     ),
     "sample_dataset": (
-        "Return bounded seeded representative rows only when record-level examples "
-        "are useful. Do not use to discover schema, distributions, aggregates, "
-        "missing concepts, or business meaning."
+        "Return bounded seeded representative record-level examples."
     ),
     "filter_dataset": (
-        "Return bounded matching records using validated AND filters and sorting. "
-        "Use for row lookup, top records, or record-level investigation, not for "
-        "grouped or summary calculations."
+        "Return bounded matching records for row lookup, validated AND filters, "
+        "and sorting; not grouped summaries."
     ),
     "aggregate_dataset": (
         "Compute bounded grouped, numeric, comparative, or time-grained analysis. "
-        "For an explicit aggregate question with named fields, call this directly "
-        "without inspect or profile preflight. Combine all useful metrics, "
-        "dimensions, filters, and sorting in one call whenever possible."
+        "With named fields call directly without inspect or profile preflight; "
+        "combine needed metrics, dimensions, filters, and sorting."
     ),
     "check_data_quality": (
-        "Directly answer explicit data-quality questions with fixed objective and "
-        "conservative heuristic signals. Normally use this as the only Tool; do "
-        "not add inspect, profile, or sample calls for optional context."
+        "Return fixed bounded objective and heuristic data-quality signals. "
+        "Normally use as the only Tool for explicit quality questions."
     ),
 }
 
@@ -301,6 +292,7 @@ def _strict_json_schema(model: type[_Arguments]) -> dict[str, Any]:
     def make_strict(node: Any) -> None:
         if isinstance(node, dict):
             node.pop("default", None)
+            node.pop("title", None)
             if node.get("type") == "object":
                 properties = node.get("properties", {})
                 if isinstance(properties, dict):

@@ -77,10 +77,8 @@ def test_env_example_contains_postgres_placeholders_without_real_credentials() -
         encoding="utf-8"
     )
 
-    assert (
-        "DATA_COPILOT_POSTGRES_DSN="
-        "postgresql://username:password@localhost:5432/database_name"
-    ) in example
+    assert "# DATA_COPILOT_POSTGRES_DSN=your-postgresql-dsn-here" in example
+    assert "postgresql://" not in example
     assert "POSTGRES_CONNECT_TIMEOUT_SECONDS=5" in example
     assert "POSTGRES_STATEMENT_TIMEOUT_MS=15000" in example
     assert "super-secret" not in example

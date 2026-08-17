@@ -3,6 +3,7 @@
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from importlib.resources import files
 from time import perf_counter
 
@@ -13,7 +14,11 @@ from data_copilot.datasets.registry import DatasetRegistry
 from data_copilot.errors import (
     AgentExecutionError,
     DataCopilotError,
+    FinalSynthesisError,
     LLMClientError,
+    LLMFatalError,
+    LLMMalformedResponseError,
+    LLMTransientError,
 )
 from data_copilot.evidence import EvidenceBuilder, EvidenceFormatter
 from data_copilot.llm import (
@@ -23,7 +28,15 @@ from data_copilot.llm import (
     LLMRole,
     LLMUsage,
 )
+from data_copilot.llm.models import ToolDefinition
 from data_copilot.tools.dispatcher import ToolDispatcher
+from data_copilot.runtime import (
+    ProviderRetryPolicy,
+    RuntimeFailure,
+    RuntimeStage,
+    classify_runtime_failure,
+    is_nonexecuting_tool_failure,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +62,31 @@ _TOOL_TEXT_MARKERS = (
     "<tool_call>",
     "<tool_calls>",
 )
+_EVIDENCE_PREFIXES = (
+    "SEMANTIC_EVIDENCE\n",
+    "DOCUMENT_EVIDENCE\n",
+    "DATA_EVIDENCE\n",
+    "DIAGNOSTIC_EVIDENCE\n",
+    "PIPELINE_EVIDENCE\n",
+)
+_RUN_LOCAL_CACHEABLE_DATASET_TOOLS = frozenset(
+    {
+        "inspect_dataset",
+        "profile_dataset",
+        "sample_dataset",
+        "filter_dataset",
+        "aggregate_dataset",
+    }
+)
+_MAX_REJECTED_TOOL_REQUESTS = 3
+
+
+@dataclass(frozen=True)
+class _ToolCallState:
+    executed: bool
+    evidence_produced: bool
+    failure: RuntimeFailure | None = None
+    terminal: bool = False
 
 
 class AgentResult(BaseModel):
@@ -74,6 +112,7 @@ class DataCopilotAgent:
         max_tool_rounds: int = MAX_TOOL_ROUNDS,
         evidence_builder: EvidenceBuilder | None = None,
         evidence_formatter: EvidenceFormatter | None = None,
+        provider_retry_policy: ProviderRetryPolicy | None = None,
     ) -> None:
         if (
             isinstance(max_tool_rounds, bool)
@@ -87,6 +126,7 @@ class DataCopilotAgent:
         self._evidence_builder = evidence_builder or EvidenceBuilder()
         self._evidence_formatter = evidence_formatter or EvidenceFormatter()
         self._max_tool_rounds = max_tool_rounds
+        self._provider_retry_policy = provider_retry_policy or ProviderRetryPolicy()
         self._messages: list[LLMMessage] = [
             LLMMessage(
                 role=LLMRole.SYSTEM,
@@ -109,38 +149,99 @@ class DataCopilotAgent:
         tool_calls_used = 0
         rounds = 0
         usage: LLMUsage | None = None
+        evidence_cache: dict[tuple[str, str], tuple[str, int]] = {}
+        rejected_tool_requests = 0
 
         while True:
-            response = self._complete(
-                tool_calls_remaining=self._max_tool_rounds - tool_calls_used
-            )
+            try:
+                response = self._complete(
+                    tool_calls_remaining=self._max_tool_rounds - tool_calls_used
+                )
+            except LLMClientError as exc:
+                if _has_evidence(self._messages):
+                    raise AgentExecutionError(
+                        "Execution stopped after partial Evidence was collected; "
+                        "no unsupported final answer was produced."
+                    ) from exc
+                raise
             if response.usage is not None:
                 usage = response.usage if usage is None else usage + response.usage
             rounds += 1
             if response.tool_calls:
-                requested_count = len(response.tool_calls)
-                if tool_calls_used + requested_count > self._max_tool_rounds:
+                # Keep the same evidence-aware sequential contract as the
+                # database Agent: execute only the first ordered proposal, then
+                # require a fresh decision that can observe the new Evidence.
+                tool_call = response.tool_calls[0]
+                self._messages.append(
+                    LLMMessage(
+                        role=LLMRole.ASSISTANT,
+                        # Tool-call prose adds no trusted facts. Keep the ordered
+                        # structured request and omit redundant assistant chatter.
+                        content=None,
+                        tool_calls=(tool_call,),
+                    )
+                )
+                cache_key = _canonical_tool_request(
+                    tool_call.name, tool_call.arguments
+                )
+                cacheable = tool_call.name in _RUN_LOCAL_CACHEABLE_DATASET_TOOLS
+                cached = (
+                    evidence_cache.get(cache_key)
+                    if cacheable and cache_key is not None
+                    else None
+                )
+                if cached is not None:
+                    original_call_id, avoided_chars = cached
+                    self._messages.append(
+                        LLMMessage(
+                            role=LLMRole.TOOL,
+                            content=_evidence_reuse(
+                                tool_name=tool_call.name,
+                                original_tool_call_id=original_call_id,
+                                avoided_chars=avoided_chars,
+                            ),
+                            tool_call_id=tool_call.call_id,
+                        )
+                    )
+                    logger.info(
+                        "tool_call name=%s status=reused round=%d avoided_chars=%d",
+                        tool_call.name,
+                        tool_calls_used + 1,
+                        avoided_chars,
+                    )
                     return self._final_synthesis(
                         tool_calls_used=tool_calls_used,
                         rounds=rounds,
                         usage=usage,
                     )
-                self._messages.append(
-                    LLMMessage(
-                        role=LLMRole.ASSISTANT,
-                        content=response.text,
-                        tool_calls=response.tool_calls,
-                    )
+                state = self._execute_tool_call(
+                    tool_call.call_id,
+                    tool_call.name,
+                    tool_call.arguments,
+                    tool_calls_used + 1,
                 )
-                for tool_call in response.tool_calls:
+                if state.executed:
                     tool_calls_used += 1
-                    self._execute_tool_call(
+                else:
+                    rejected_tool_requests += 1
+                latest_content = self._messages[-1].content or ""
+                if (
+                    cacheable
+                    and cache_key is not None
+                    and state.evidence_produced
+                    and latest_content.startswith(_EVIDENCE_PREFIXES)
+                ):
+                    evidence_cache[cache_key] = (
                         tool_call.call_id,
-                        tool_call.name,
-                        tool_call.arguments,
-                        tool_calls_used,
+                        len(latest_content),
                     )
                 if tool_calls_used == self._max_tool_rounds:
+                    return self._final_synthesis(
+                        tool_calls_used=tool_calls_used,
+                        rounds=rounds,
+                        usage=usage,
+                    )
+                if rejected_tool_requests >= _MAX_REJECTED_TOOL_REQUESTS:
                     return self._final_synthesis(
                         tool_calls_used=tool_calls_used,
                         rounds=rounds,
@@ -167,14 +268,30 @@ class DataCopilotAgent:
         messages = _messages_with_tool_budget(
             self._messages, tool_calls_remaining=tool_calls_remaining
         )
-        try:
-            return self._llm_client.complete(
-                messages, self._dispatcher.schemas
-            )
-        except LLMClientError:
-            raise
-        except Exception as exc:
-            raise LLMClientError("The LLM client failed safely.") from exc
+        return self._provider_complete(messages, self._dispatcher.schemas)
+
+    def _provider_complete(
+        self,
+        messages: Sequence[LLMMessage],
+        tools: Sequence[ToolDefinition],
+    ) -> LLMResponse:
+        retries = 0
+        while True:
+            try:
+                response = self._llm_client.complete(messages, tools)
+                if response.text is None and not response.tool_calls:
+                    raise LLMMalformedResponseError(
+                        "The model provider returned no usable decision."
+                    )
+                return response
+            except LLMTransientError:
+                if retries >= self._provider_retry_policy.max_retries:
+                    raise
+                retries += 1
+            except LLMClientError:
+                raise
+            except Exception as exc:
+                raise LLMFatalError("The LLM client failed safely.") from exc
 
     def _final_synthesis(
         self,
@@ -190,11 +307,12 @@ class DataCopilotAgent:
             self._messages, tool_calls_remaining=0
         )
         try:
-            response = self._llm_client.complete(messages, ())
-        except LLMClientError:
-            raise
-        except Exception as exc:
-            raise LLMClientError("The LLM client failed safely.") from exc
+            response = self._provider_complete(messages, ())
+        except LLMClientError as exc:
+            raise FinalSynthesisError(
+                "Final synthesis could not complete; collected Evidence remains "
+                "available, but no final analytical answer was produced."
+            ) from exc
         if response.usage is not None:
             usage = response.usage if usage is None else usage + response.usage
         answer = _final_synthesis_answer(response)
@@ -211,7 +329,7 @@ class DataCopilotAgent:
         name: str,
         arguments: str,
         tool_round: int,
-    ) -> None:
+    ) -> _ToolCallState:
         started = perf_counter()
         try:
             result = self._dispatcher.dispatch(name, arguments)
@@ -223,8 +341,24 @@ class DataCopilotAgent:
                 tool_round,
                 (perf_counter() - started) * 1000,
             )
+            state = _ToolCallState(executed=True, evidence_produced=True)
         except DataCopilotError as exc:
             content = _safe_tool_error(exc)
+            executed = not is_nonexecuting_tool_failure(exc)
+            failure = classify_runtime_failure(
+                exc,
+                stage=(
+                    RuntimeStage.TOOL_EXECUTION
+                    if executed
+                    else RuntimeStage.TOOL_VALIDATION
+                ),
+                tool_executed=executed,
+            )
+            state = _ToolCallState(
+                executed=executed,
+                evidence_produced=False,
+                failure=failure,
+            )
             logger.info(
                 "tool_call name=%s status=failure round=%d duration_ms=%.3f error=%s",
                 name if name in self._dispatcher.allowed_tool_names else "unsupported",
@@ -233,7 +367,17 @@ class DataCopilotAgent:
                 type(exc).__name__,
             )
         except Exception as exc:
-            raise AgentExecutionError("Tool execution failed safely.") from exc
+            failure = classify_runtime_failure(
+                exc,
+                stage=RuntimeStage.TOOL_EXECUTION,
+                tool_executed=True,
+            )
+            content = _safe_runtime_failure(type(exc).__name__, failure)
+            state = _ToolCallState(
+                executed=True,
+                evidence_produced=False,
+                failure=failure,
+            )
         self._messages.append(
             LLMMessage(
                 role=LLMRole.TOOL,
@@ -241,6 +385,7 @@ class DataCopilotAgent:
                 tool_call_id=call_id,
             )
         )
+        return state
 
 
 def _final_synthesis_answer(response: LLMResponse) -> str:
@@ -297,8 +442,77 @@ def _system_prompt(public_metadata: dict[str, object]) -> str:
 
 
 def _safe_tool_error(error: DataCopilotError) -> str:
+    executed = not is_nonexecuting_tool_failure(error)
+    failure = classify_runtime_failure(
+        error,
+        stage=(
+            RuntimeStage.TOOL_EXECUTION if executed else RuntimeStage.TOOL_VALIDATION
+        ),
+        tool_executed=executed,
+    )
+    return _safe_runtime_failure(type(error).__name__, failure)
+
+
+def _safe_runtime_failure(error_type: str, failure: RuntimeFailure) -> str:
     return "TOOL_ERROR\n" + json.dumps(
-        {"error_type": type(error).__name__, "message": str(error)},
+        {
+            "error_type": error_type,
+            "message": failure.safe_message,
+            "failure_category": failure.category.value,
+            "failure_stage": failure.stage.value,
+            "retryable": failure.retryable,
+            "tool_executed": failure.tool_executed,
+            "evidence_produced": failure.evidence_produced,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
+    )
+
+
+def _has_evidence(messages: Sequence[LLMMessage]) -> bool:
+    return any(
+        message.role is LLMRole.TOOL
+        and (message.content or "").startswith(_EVIDENCE_PREFIXES)
+        for message in messages
+    )
+
+
+def _canonical_tool_request(name: str, arguments: str) -> tuple[str, str] | None:
+    """Return a semantic request key; invalid JSON remains uncached."""
+
+    try:
+        parsed = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    try:
+        canonical = json.dumps(
+            parsed,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError):
+        return None
+    return name, canonical
+
+
+def _evidence_reuse(
+    *,
+    tool_name: str,
+    original_tool_call_id: str,
+    avoided_chars: int,
+) -> str:
+    """Create a bounded reference to Evidence already present in this run."""
+
+    return "EVIDENCE_REUSE\n" + json.dumps(
+        {
+            "tool_name": tool_name,
+            "original_tool_call_id": original_tool_call_id,
+            "avoided_chars": avoided_chars,
+            "instruction": "Reuse the earlier Evidence; no Tool was executed.",
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )

@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -18,6 +19,7 @@ from data_copilot.databases.constants import (
 )
 from data_copilot.databases.models import PostgresConnectionConfig
 from data_copilot.errors import ConfigurationError, DatabaseConfigurationError
+from data_copilot.runtime import MAX_PROVIDER_RETRIES, ProviderRetryPolicy
 
 try:
     from psycopg.conninfo import conninfo_to_dict
@@ -57,6 +59,7 @@ MODEL_ENV_VAR = "DATA_COPILOT_MODEL"
 OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 DEEPSEEK_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY"
 DEEPSEEK_BASE_URL_ENV_VAR = "DEEPSEEK_BASE_URL"
+PROVIDER_MAX_RETRIES_ENV_VAR = "DATA_COPILOT_PROVIDER_MAX_RETRIES"
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,14 @@ class LLMProviderConfig:
     model: str
     api_key: str = field(repr=False)
     base_url: str | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    """Validated program-owned limits shared by interactive Agent startup."""
+
+    tool_budget: int
+    provider_retry_policy: ProviderRetryPolicy
 
 
 def load_environment(dotenv_path: str | Path | None = None) -> bool:
@@ -106,11 +117,39 @@ def read_llm_config(
         raise ConfigurationError(
             f"{DEEPSEEK_BASE_URL_ENV_VAR} cannot be empty."
         )
+    _validate_provider_base_url(base_url)
     return LLMProviderConfig(
         provider=provider,
         model=model,
         api_key=_required(values, DEEPSEEK_API_KEY_ENV_VAR),
         base_url=base_url,
+    )
+
+
+def read_runtime_config(
+    environ: Mapping[str, str] | None = None,
+) -> RuntimeConfig:
+    """Read the small program-owned runtime policy; Tool budget stays fixed."""
+
+    values = os.environ if environ is None else environ
+    raw_retries = values.get(
+        PROVIDER_MAX_RETRIES_ENV_VAR,
+        str(ProviderRetryPolicy().max_retries),
+    ).strip()
+    try:
+        max_retries = int(raw_retries)
+    except ValueError:
+        raise ConfigurationError(
+            f"{PROVIDER_MAX_RETRIES_ENV_VAR} must be an integer."
+        ) from None
+    if not 0 <= max_retries <= MAX_PROVIDER_RETRIES:
+        raise ConfigurationError(
+            f"{PROVIDER_MAX_RETRIES_ENV_VAR} must be between 0 and "
+            f"{MAX_PROVIDER_RETRIES}."
+        )
+    return RuntimeConfig(
+        tool_budget=MAX_TOOL_ROUNDS,
+        provider_retry_policy=ProviderRetryPolicy(max_retries=max_retries),
     )
 
 
@@ -198,3 +237,30 @@ def _bounded_int(
             f"{name} must be between 1 and {maximum}."
         )
     return value
+
+
+def _validate_provider_base_url(base_url: str) -> None:
+    try:
+        parsed = urlsplit(base_url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        raise _provider_base_url_error() from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or hostname is None
+        or any(character.isspace() for character in base_url)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise _provider_base_url_error()
+
+
+def _provider_base_url_error() -> ConfigurationError:
+    return ConfigurationError(
+        f"{DEEPSEEK_BASE_URL_ENV_VAR} must be an HTTP(S) service URL "
+        "without credentials, query parameters, or fragments."
+    )

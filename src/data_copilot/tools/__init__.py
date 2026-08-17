@@ -33,6 +33,7 @@ from data_copilot.tools.models import (
 from data_copilot.tools.profile import ProfileDatasetTool
 from data_copilot.tools.quality import CheckDataQualityTool
 from data_copilot.tools.sample import SampleDatasetTool
+from data_copilot.tools.troubleshooting import TroubleshootingToolSet
 
 __all__ = [
     "AggregateDatasetResult",
@@ -62,4 +63,5 @@ __all__ = [
     "SortSpec",
     "TimeGrain",
     "ToolDispatcher",
+    "TroubleshootingToolSet",
 ]

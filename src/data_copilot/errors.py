@@ -73,6 +73,58 @@ class InvalidQualityRequestError(DataCopilotError):
     """Raised when data-quality arguments are invalid or ambiguous."""
 
 
+class SnapshotComparisonError(DataCopilotError):
+    """Raised when two diagnostic snapshots cannot be safely compared."""
+
+
+class DiagnosticCollectionError(DataCopilotError):
+    """Raised when a diagnostic snapshot cannot be collected safely."""
+
+
+class DiagnosticTimeoutError(DiagnosticCollectionError):
+    """Raised when diagnostic collection reaches its statement timeout."""
+
+
+class DiagnosticResourceError(DataCopilotError):
+    """Raised when an approved troubleshooting resource is unavailable."""
+
+
+class DiagnosticComparisonUnavailableError(DiagnosticResourceError):
+    """Raised when a required before/after comparison input is unavailable."""
+
+
+class DiagnosticEvidenceBuildError(DataCopilotError):
+    """Raised when diagnostic facts cannot become public evidence."""
+
+
+class DiagnosticEvidenceLimitError(DiagnosticEvidenceBuildError):
+    """Raised when diagnostic evidence cannot fit its configured bound."""
+
+
+class PipelineError(DataCopilotError):
+    """Base class for deterministic pipeline evidence failures."""
+
+
+class PipelineConfigurationError(PipelineError):
+    """Raised when pipeline input or loader configuration is unsafe or invalid."""
+
+
+class PipelineLimitError(PipelineError):
+    """Raised when pipeline input exceeds a deterministic resource limit."""
+
+
+class PipelineComparisonError(PipelineError):
+    """Raised when two pipeline runs cannot be compared safely."""
+
+
+class PipelineEvidenceBuildError(PipelineError):
+    """Raised when typed pipeline facts cannot become public evidence."""
+
+
+class PipelineEvidenceLimitError(PipelineEvidenceBuildError):
+    """Raised when pipeline evidence cannot fit its configured size limit."""
+
+
 class EvidenceBuildError(DataCopilotError):
     """Raised when a typed Tool Result cannot be converted to evidence."""
 
@@ -83,6 +135,18 @@ class EvidenceLimitError(EvidenceBuildError):
 
 class LLMClientError(DataCopilotError):
     """Raised when the configured LLM client cannot produce a safe response."""
+
+
+class LLMTransientError(LLMClientError):
+    """Raised for a sanitized provider failure that may be retried."""
+
+
+class LLMFatalError(LLMClientError):
+    """Raised for a sanitized provider failure that must not be retried."""
+
+
+class LLMMalformedResponseError(LLMClientError):
+    """Raised when a provider response cannot form a valid model decision."""
 
 
 class ConfigurationError(DataCopilotError):
@@ -183,6 +247,10 @@ class AgentExecutionError(DataCopilotError):
 
 class AgentRoundLimitError(AgentExecutionError):
     """Raised when an Agent requests more than the allowed Tool calls."""
+
+
+class FinalSynthesisError(AgentExecutionError):
+    """Raised when Tool-disabled final synthesis cannot complete safely."""
 
 
 class SemanticConfigurationError(ConfigurationError):

@@ -8,6 +8,7 @@ from data_copilot.datasets import DatasetRegistry
 from data_copilot.errors import (
     AgentExecutionError,
     LLMClientError,
+    LLMMalformedResponseError,
 )
 from data_copilot.llm import (
     FakeLLMClient,
@@ -153,14 +154,15 @@ def test_tool_error_can_recover_through_safe_error_and_inspection(
 
 
 @pytest.mark.parametrize(
-    ("name", "arguments", "expected_error"),
+    ("name", "arguments", "expected_error", "expected_tool_calls"),
     [
-        ("run_sql", {"sql": "DROP TABLE x"}, "UnknownToolError"),
-        ("inspect_dataset", "not-json", "ToolArgumentError"),
+        ("run_sql", {"sql": "DROP TABLE x"}, "UnknownToolError", 0),
+        ("inspect_dataset", "not-json", "ToolArgumentError", 0),
         (
             "filter_dataset",
             {"columns": None, "filters": [], "order_by": None, "limit": 201},
             "ResourceLimitError",
+            1,
         ),
     ],
 )
@@ -169,6 +171,7 @@ def test_rejected_tool_requests_are_safe_and_recoverable(
     name: str,
     arguments: object,
     expected_error: str,
+    expected_tool_calls: int,
 ) -> None:
     registry, dataset_id, path = registered_dataset
     client = FakeLLMClient(
@@ -180,7 +183,7 @@ def test_rejected_tool_requests_are_safe_and_recoverable(
 
     result = DataCopilotAgent(registry, dataset_id, client).ask("Do it")
 
-    assert result.tool_calls_used == 1
+    assert result.tool_calls_used == expected_tool_calls
     tool_output = client.requests[1][0][-1].content or ""
     assert tool_output.startswith("TOOL_ERROR\n")
     assert expected_error in tool_output
@@ -192,13 +195,20 @@ def test_max_tool_rounds_gets_one_tool_disabled_final_synthesis(
     registered_dataset: tuple[DatasetRegistry, str, Path]
 ) -> None:
     registry, dataset_id, _ = registered_dataset
-    client = FakeLLMClient([
-        *(
-            _tool_call("inspect_dataset", {}, call_id=f"call_{index}")
-            for index in range(5)
-        ),
-        LLMResponse(text="Final answer from accumulated Evidence."),
-    ])
+    client = FakeLLMClient(
+        [
+            _tool_call("inspect_dataset", {}, call_id="inspect"),
+            *(
+                _tool_call(
+                    "sample_dataset",
+                    {"columns": None, "size": 1, "seed": index},
+                    call_id=f"sample_{index}",
+                )
+                for index in range(4)
+            ),
+            LLMResponse(text="Final answer from accumulated Evidence."),
+        ]
+    )
     agent = DataCopilotAgent(registry, dataset_id, client)
 
     result = agent.ask("Keep inspecting")
@@ -265,7 +275,7 @@ def test_empty_or_failed_llm_response_fails_explicitly(
 ) -> None:
     registry, dataset_id, _ = registered_dataset
 
-    with pytest.raises(AgentExecutionError, match="neither"):
+    with pytest.raises(LLMMalformedResponseError, match="no usable decision"):
         DataCopilotAgent(
             registry, dataset_id, FakeLLMClient([LLMResponse()])
         ).ask("Question")

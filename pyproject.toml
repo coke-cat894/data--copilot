@@ -29,7 +29,7 @@ test = ["pytest>=8,<9"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"data_copilot.prompts" = ["system.md", "database_system.md"]
+"data_copilot.prompts" = ["system.md", "database_system.md", "troubleshooting.md"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

@@ -15,7 +15,12 @@ from data_copilot.config import (
     MODEL_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
 )
-from data_copilot.errors import LLMClientError
+from data_copilot.errors import (
+    LLMClientError,
+    LLMFatalError,
+    LLMMalformedResponseError,
+    LLMTransientError,
+)
 from data_copilot.llm.models import (
     LLMMessage,
     LLMResponse,
@@ -65,7 +70,9 @@ class OpenAILLMClient:
         try:
             from openai import OpenAI
 
-            self._client = OpenAI(api_key=resolved_api_key)
+            # Provider SDK retries are disabled so the program-owned Agent policy
+            # remains the single bounded and observable retry boundary.
+            self._client = OpenAI(api_key=resolved_api_key, max_retries=0)
         except Exception as exc:
             raise LLMClientError("The OpenAI client could not be initialized.") from exc
 
@@ -109,6 +116,10 @@ class OpenAILLMClient:
                 tool_calls=tool_calls,
                 usage=_responses_usage(getattr(response, "usage", None)),
             )
+            if normalized.text is None and not normalized.tool_calls:
+                raise LLMMalformedResponseError(
+                    "The OpenAI response contained no usable output."
+                )
             self._pending_response = (
                 len(messages),
                 normalized,
@@ -118,7 +129,11 @@ class OpenAILLMClient:
         except LLMClientError:
             raise
         except Exception as exc:
-            raise LLMClientError("The OpenAI request failed safely.") from exc
+            if _is_transient_provider_exception(exc):
+                raise LLMTransientError(
+                    "The OpenAI request failed temporarily."
+                ) from exc
+            raise LLMFatalError("The OpenAI request failed safely.") from exc
 
     def _bind_pending_response(self, messages: Sequence[LLMMessage]) -> None:
         if self._pending_response is None:
@@ -161,12 +176,26 @@ class DeepSeekLLMClient:
         api_key: str | None = None,
         base_url: str | None = None,
         sdk_client: Any | None = None,
+        max_retries: int | None = None,
     ) -> None:
         self.model = (
             model or os.getenv(MODEL_ENV_VAR) or DEFAULT_DEEPSEEK_MODEL
         )
         if not self.model.strip():
             raise LLMClientError(f"{MODEL_ENV_VAR} cannot be empty.")
+        if (
+            max_retries is not None
+            and (
+                isinstance(max_retries, bool)
+                or not isinstance(max_retries, int)
+                or max_retries < 0
+                or max_retries > 0
+            )
+        ):
+            raise LLMClientError(
+                "DeepSeek SDK max_retries must be 0; use the program-owned "
+                "ProviderRetryPolicy for observable retries."
+            )
         if sdk_client is not None:
             self._client = sdk_client
             return
@@ -188,9 +217,14 @@ class DeepSeekLLMClient:
         try:
             from openai import OpenAI
 
+            client_arguments: dict[str, object] = {
+                "api_key": resolved_api_key,
+                "base_url": resolved_base_url,
+                # Keep retries observable at the Agent boundary.
+                "max_retries": 0,
+            }
             self._client = OpenAI(
-                api_key=resolved_api_key,
-                base_url=resolved_base_url,
+                **client_arguments,
             )
         except Exception as exc:
             raise LLMClientError(
@@ -218,11 +252,13 @@ class DeepSeekLLMClient:
                 )
             response = self._client.chat.completions.create(**request)
             if not response.choices:
-                raise LLMClientError("The DeepSeek response contained no choices.")
+                raise LLMMalformedResponseError(
+                    "The DeepSeek response contained no choices."
+                )
             message = response.choices[0].message
             raw_tool_calls = tuple(message.tool_calls or ())
             if any(call.type != "function" for call in raw_tool_calls):
-                raise LLMClientError(
+                raise LLMMalformedResponseError(
                     "The DeepSeek response contained an unsupported Tool type."
                 )
             tool_calls = tuple(
@@ -234,21 +270,30 @@ class DeepSeekLLMClient:
                 for call in raw_tool_calls
             )
             content = message.content
-            return LLMResponse(
+            normalized = LLMResponse(
                 text=content if content else None,
                 tool_calls=tool_calls,
                 usage=_chat_usage(getattr(response, "usage", None)),
             )
+            if normalized.text is None and not normalized.tool_calls:
+                raise LLMMalformedResponseError(
+                    "The DeepSeek response contained no usable output."
+                )
+            return normalized
         except LLMClientError:
             raise
         except Exception as exc:
-            raise LLMClientError("The DeepSeek request failed safely.") from exc
+            if _is_transient_provider_exception(exc):
+                raise LLMTransientError(
+                    "The DeepSeek request failed temporarily."
+                ) from exc
+            raise LLMFatalError("The DeepSeek request failed safely.") from exc
 
 
 class FakeLLMClient:
     """Scripted client for deterministic Agent and CLI tests."""
 
-    def __init__(self, responses: Sequence[LLMResponse]) -> None:
+    def __init__(self, responses: Sequence[LLMResponse | Exception]) -> None:
         self._responses = deque(responses)
         self.requests: list[
             tuple[tuple[LLMMessage, ...], tuple[ToolDefinition, ...]]
@@ -262,7 +307,10 @@ class FakeLLMClient:
         self.requests.append((tuple(messages), tuple(tools)))
         if not self._responses:
             raise LLMClientError("Fake LLM has no scripted response remaining.")
-        return self._responses.popleft()
+        response = self._responses.popleft()
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def create_llm_client(config: LLMProviderConfig) -> LLMClient:
@@ -357,8 +405,20 @@ def _matches_response(message: LLMMessage, response: LLMResponse) -> bool:
     if message.tool_calls != response.tool_calls:
         return False
     if response.tool_calls:
-        return message.content == response.text
+        # Agents may deterministically omit non-factual Tool-call chatter while
+        # retaining the exact structured calls. Provider-native output remains
+        # bound locally for Responses API continuity.
+        return message.content is None or message.content == response.text
     return (message.content or "").strip() == (response.text or "").strip()
+
+
+def _is_transient_provider_exception(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+    status_code = getattr(error, "status_code", None)
+    return isinstance(status_code, int) and (
+        status_code in {408, 409, 429} or 500 <= status_code <= 599
+    )
 
 
 def _responses_usage(usage: Any | None) -> LLMUsage | None:

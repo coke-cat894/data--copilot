@@ -1,0 +1,51 @@
+{
+  "pipeline_id": "daily_orders",
+  "run_id": "run_healthy",
+  "execution_time": "2026-08-13T01:00:00Z",
+  "start_time": "2026-08-13T01:00:00Z",
+  "end_time": "2026-08-13T01:03:00Z",
+  "status": "SUCCESS",
+  "steps": [
+    {
+      "step_id": "extract_orders",
+      "name": "Extract orders",
+      "ordinal": 0,
+      "status": "success",
+      "start_time": "2026-08-13T01:00:00Z",
+      "end_time": "2026-08-13T01:01:00Z",
+      "input_rows": 1200,
+      "output_rows": 1200,
+      "rejected_rows": 0,
+      "events": [
+        {
+          "timestamp": "2026-08-13T01:00:30Z",
+          "level": "INFO",
+          "message": "Extracted 1,200 rows"
+        }
+      ]
+    },
+    {
+      "step_id": "transform_orders",
+      "name": "Transform orders",
+      "ordinal": 1,
+      "status": "success",
+      "start_time": "2026-08-13T01:01:00Z",
+      "end_time": "2026-08-13T01:02:00Z",
+      "input_rows": 1200,
+      "output_rows": 1200,
+      "rejected_rows": 0
+    },
+    {
+      "step_id": "load_orders",
+      "name": "Load orders",
+      "ordinal": 2,
+      "status": "success",
+      "start_time": "2026-08-13T01:02:00Z",
+      "end_time": "2026-08-13T01:03:00Z",
+      "input_rows": 1200,
+      "output_rows": 1200,
+      "rejected_rows": 0
+    }
+  ],
+  "events": []
+}

@@ -99,6 +99,6 @@ def test_env_and_result_secret_safety_rules_are_present() -> None:
     assert ".env\n" in gitignore
     assert ".env.*" in gitignore
     assert "!.env.example" in gitignore
-    assert "your_deepseek_api_key_here" in example
-    assert "your_openai_api_key_here" in example
+    assert "# DEEPSEEK_API_KEY=your-key-here" in example
+    assert "# OPENAI_API_KEY=your-key-here" in example
     assert "sk-" not in example

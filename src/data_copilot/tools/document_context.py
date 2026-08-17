@@ -23,12 +23,12 @@ class _RetrieveDocumentsArguments(BaseModel):
     query: str = Field(
         min_length=1,
         max_length=MAX_DOCUMENT_QUERY_CHARS,
-        description="Plain lexical query for relevant trusted business-document context.",
+        description="Lexical query for relevant configured business documents.",
     )
     top_k: int = Field(
         ge=1,
         le=MAX_RETRIEVAL_TOP_K,
-        description="Maximum number of relevant chunks to retrieve.",
+        description="Maximum relevant chunks.",
     )
 
 
@@ -52,10 +52,8 @@ class DocumentRetrievalTool:
         self._schema = ToolDefinition(
             name=self.name,
             description=(
-                "Retrieve bounded relevant chunks from the configured trusted local "
-                "business-document index. Returns DOCUMENT_EVIDENCE for policy, "
-                "rationale, history, and explanatory context. It does not return "
-                "official structured metric definitions or observed database values."
+                "Return bounded DOCUMENT_EVIDENCE for policy, rationale, history, "
+                "or context; not canonical definitions or observed database values."
             ),
             parameters=_strict_json_schema(_RetrieveDocumentsArguments),
         )
@@ -82,6 +80,7 @@ def _strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
     def make_strict(node: Any) -> None:
         if isinstance(node, dict):
             node.pop("default", None)
+            node.pop("title", None)
             if node.get("type") == "object":
                 properties = node.get("properties", {})
                 if isinstance(properties, dict):

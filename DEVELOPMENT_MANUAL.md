@@ -671,7 +671,7 @@ Seal
 
 ## 21. Phase Strategy
 
-### Phase 1 — Local Data Foundation
+### Phase 1 — Local Data Foundation ✅ COMPLETE
 
 目标：
 
@@ -691,7 +691,7 @@ LLM Explanation
 
 优先让 Data Copilot 真正能够理解一个本地数据集。
 
-### Phase 2 — Data Analysis Agent
+### Phase 2 — SQL / Database Copilot ✅ COMPLETE
 
 加入：
 
@@ -716,42 +716,27 @@ Semantic Agent Integration
 Semantic + RAG Evaluation and Closure
 ```
 
-### Phase 4 — Not started
+### Phase 4 — Data Engineering Troubleshooting ✅ COMPLETE
 
-Scope requires separate approval. Phase 3 closure does not start or predefine
-Phase 4 functionality.
+Phase 4.1–4.4 completed the deterministic diagnostic snapshot, restricted
+read-only PostgreSQL collection, LLM-free pipeline/job Evidence, and bounded
+integration with the existing database Agent. Phase 4.5 completed the separate
+evaluation and live closure gate.
 
-### Phase 5 — Data Quality
+### Phase 5 — Evaluation + Product Hardening ✅ COMPLETE
 
-加入：
+Phase 5.1 增强 eval trustworthiness、observability、reproducibility 与 artifact
+safety；Phase 5.2 完成 context/token/Tool efficiency hardening；Phase 5.3 完成
+runtime reliability/error handling；Phase 5.4 完成 productization/maintainability
+hardening；Phase 5.5 完成 final end-to-end evaluation、physical-only routing
+closure 和 v1 project closure。这些阶段没有增加新的 Data Copilot product
+capability。
 
-```text
-Freshness
-Completeness
-Uniqueness
-Null
-Duplicate
-Row Count Drift
-```
+**Data Copilot v1 Roadmap ✅ COMPLETE**
 
-### Phase 6 — Troubleshooting
-
-加入：
+### Post-v1 possibilities — not part of v1 closure
 
 ```text
-Pipeline Metadata
-Logs
-Dependency
-Failure Analysis
-Root Cause Workflow
-```
-
-### Phase 7 — Real Integrations
-
-再考虑：
-
-```text
-PostgreSQL
 MySQL
 Airflow
 Spark
@@ -760,7 +745,8 @@ Warehouse
 MCP Servers
 ```
 
-具体顺序必须由真实使用需求决定。
+这些仅是未来方向，不是 v1 closure blocker。具体顺序必须由真实使用需求、
+安全边界和独立 phase approval 决定。
 
 ---
 
@@ -1451,5 +1437,605 @@ Phase 3 closure 后保留、但本阶段不实现的 technical debt：
 - quoted identifiers；
 - semantic scorer literal internal-ID limitation。
 
-Existing baseline、focused 和 final eval artifacts 均保留；closure 不修改 eval history。Phase 4
-未开始，仍需单独批准。
+Existing baseline、focused 和 final eval artifacts 均保留；closure 不修改 eval history。
+
+---
+
+## 41. Phase 4.1 Diagnostic Snapshot + Drift Foundation
+
+Phase 1、Phase 2 和 Phase 3 保持冻结。Phase 4.1 只增加独立、LLM-free 的程序可靠性边界：
+
+```text
+validated before DatasetSnapshot
++
+validated after DatasetSnapshot
+→ deterministic DriftReport
+```
+
+`DatasetSnapshot` 使用 stable logical `dataset_id`，可选 logical snapshot ID / capture time，
+以及 bounded row、column、null、distinct、exact full-row duplicate 和 numeric/date range facts。
+未知 measurement 明确保留为 `None`，不得补算或虚构。Public model 不包含 path、DSN、credential、
+SQL、arbitrary metadata 或 executable expression。
+
+Snapshot model 最多接受 200 columns，并限制 identity、column name、data type、count 和 output
+text size。Unknown field、duplicate column identity、negative/overflow count、count 超过 row count、
+invalid/non-finite rate、incompatible/reversed range、path-like dataset identity 均 fail closed。
+Column 规范排序，因此同一逻辑输入不依赖 caller insertion order。
+
+Comparator 只允许相同 logical dataset identity，并以固定顺序输出所有 comparable observed drift：
+
+```text
+column added / removed
+data type / known nullable change
+row count absolute + before-baseline percentage delta
+null count / rate change
+distinct count change
+duplicate count / rate change
+numeric/date minimum / maximum change
+```
+
+Before baseline 为 zero 时 percentage delta 明确 unknown，不产生 division-by-zero 或 misleading
+percentage。Rate finding 保留原始 before/after rate、absolute rate delta 和 percentage-point delta。
+Percentage 使用固定 four-decimal rounding policy。Phase 4.1 不配置 business threshold，不丢弃
+observable change，不声称 statistical significance，也不输出 ETL failure、broken source 或其他
+root-cause hypothesis。
+
+Finding、column 和 serialization 顺序全部 deterministic。Prompt-like dataset/column text 仍是
+bounded inert data，不是 instruction 或 capability。Phase 4.1 不连接 PostgreSQL、不调用 LLM/API、
+不修改 Agent/Tool/Evidence/SQL safety boundary、不增加 write/remediation capability，也不修改既有
+eval artifact。PostgreSQL diagnostic snapshot collection 由独立 Phase 4.2 boundary 提供；Agent
+integration 和后续 diagnosis 仍 defer 到 Phase 4.3 或以后单独批准的阶段。
+
+---
+
+## 42. Phase 4.2 PostgreSQL Data Health Diagnostics
+
+Phase 4.2 将 frozen Phase 4.1 snapshot contract 连接到既有 PostgreSQL registry/configuration，
+但不修改 Agent、Tool dispatcher、Evidence、SQLValidator 或 read-query capability：
+
+```text
+opaque database_id + schema + table
+→ DatabaseRegistry resolution
+→ one repeatable-read read-only PostgreSQL transaction
+→ program-owned bounded aggregates
+→ existing DatasetSnapshot + bounded warnings
+→ optional existing compare_snapshots()
+```
+
+`PostgresDiagnosticCollector` 不接受 DSN、credential、caller SQL 或 expression。Schema/table 先经
+logical identity validation 和 parameterized catalog lookup；dynamic relation/column identity 只通过
+psycopg `Identifier` composition 进入 program-owned SELECT。每次 collection 在第一条 query 前设置
+read-only、repeatable-read 和 registered transaction-local statement timeout；metadata、row count、
+column statistics 和可选 duplicate measurement 共享同一 MVCC snapshot，不增加 blocking lock。
+
+Metadata 最多保留既有 200 columns。默认只为前 50 columns 收集 null facts，为最多 20 个
+metadata-supported columns 收集 exact distinct count，并为最多 20 个 integer/numeric/decimal/
+real/double/date/timestamp/timestamptz columns 收集 MIN/MAX。Empty table 的 null/duplicate rate 固定
+为 `0.0`。Unsupported、scope 外或无法安全表示的 measurement 保持 `None`；approximate planner
+statistics 不得冒充 exact observation。
+
+Exact full-row duplicate 继续使用 Phase 4.1 的 duplicates-beyond-first definition。默认只有
+`row_count <= 10000`、column metadata 完整且所有 column type 可安全 grouping 时才执行完整 row
+grouping；否则 duplicate count/rate 保持 unknown，并返回 sanitized deterministic warning。Caller
+可通过 strict bounded `PostgresDiagnosticLimits` 降低或在 hard cap 内调整 profile/distinct/range/
+duplicate/warning limits。Warning 不包含 SQL、DSN、credential、driver diagnostic 或 path。
+
+Timeout、invalid catalog/statistic response 和 connection/read-only failure 转为 sanitized typed domain
+error；unknown database、schema 和 table 保持既有 fail-closed error boundary。Collector result 中的
+snapshot 可直接传给 frozen `compare_snapshots()`，collector 内不复制 drift logic。
+
+Phase 4.2 不调用 LLM/API、不注册 Agent Tool、不推断 root cause、不读取 job/pipeline log、不执行
+ANALYZE/VACUUM/temporary table/stored procedure，也不增加任何 write/remediation capability。Focused
+real PostgreSQL smoke 使用既有 restricted role，不要求额外 permission，并继续验证 INSERT、UPDATE、
+DELETE、CREATE、DROP、ALTER 均被 database 拒绝。
+
+---
+
+## 43. Phase 4.3 Pipeline / Job Log Troubleshooting Foundation
+
+Phase 4.3 在 frozen Phase 4.1/4.2 之外建立独立、LLM-free 的 pipeline observation boundary：
+
+```text
+explicit local JSON / JSONL pipeline records
+→ safe bounded loader
+→ strict PipelineRun / PipelineStepRun / PipelineEvent
+→ deterministic normalization and factual run comparison
+→ bounded sanitized PIPELINE_EVIDENCE
+```
+
+Run 和 step 只使用 bounded logical identity；public provenance 只有 logical source file name 和
+record index，不包含 absolute path。Status 固定为 pending/running/success/failed/cancelled/skipped/
+unknown，event level 固定为 debug/info/warning/error/critical。Timestamp 必须 timezone-aware；step
+duration 可从 start/end deterministic derive。Reported input/output/rejected count 必须 non-negative，
+unknown 保持 `None`，zero 保持 observed zero。Step/event 使用 canonical order，duplicate identity、
+invalid association、negative/inconsistent timing/count 和 unknown field 均 fail closed。
+
+Loader 只接受显式 file/directory 和显式 allowed roots。Directory scan 为 single-level、deterministic、
+non-recursive；只允许 UTF-8 `.json`/`.jsonl` regular files，拒绝 symlink component、hidden source、
+unsupported type、duplicate run identity，并限制 file count、file bytes、runs per file 和 total runs。
+Loader 不连接 network、database 或 external pipeline service。
+
+`compare_pipeline_runs` 只比较相同 pipeline identity，按 canonical order 报告 observed overall/step
+status、added/missing step、comparable duration、input/output/rejected count、warning/error event count，
+以及 baseline 中 later step 未观察到的 early-stop fact。它不配置 significance threshold、不猜测
+unreported value，也不将 event text 映射为 cause。
+
+`PIPELINE_EVIDENCE` 与 `DATA_EVIDENCE`、`SEMANTIC_EVIDENCE`、`DOCUMENT_EVIDENCE` 分离。Envelope
+只保留 selected step summary、relevant warning/error/critical event、factual comparison finding 和 logical
+provenance；分别限制 record/message/serialized chars。Truncation 删除完整 trailing record 并显式给出
+warning。Common password/API key/bearer token/DSN/connection-string forms 在 public Evidence 前进行
+conservative redaction；source model 不被修改。完整 raw log、unbounded stack trace、credential、environment、
+driver diagnostic 和 absolute path 不进入 Evidence。Prompt-like log 仍只是 bounded inert content。
+
+Phase 4.1 只表示 observed data drift，Phase 4.2 只从 PostgreSQL 收集 snapshot，Phase 4.3 只表示
+observed pipeline/job execution facts。即使这些 evidence 同时存在，本阶段也不得输出 causal/root-cause
+claim。Phase 4.3 不调用 LLM/API、不注册 Agent Tool、不修改 SQL/database safety、不增加 external
+Airflow/Spark/Databricks/dbt/observability adapter，也不提供 write/remediation。Combined Evidence 的
+Agent-driven troubleshooting 和 root-cause reasoning defer 到单独批准的 Phase 4.4。
+
+---
+
+## 44. Phase 4.4 Troubleshooting Agent Integration
+
+Phase 4.4 不建立 parallel Agent，也不把 deterministic diagnostics 移进 Prompt。它向既有
+`DatabaseCopilotAgent` 增加一个 optional、program-configured `TroubleshootingResources` boundary：
+
+```text
+approved DatasetSnapshot / PipelineRun resources
++ optional existing PostgresDiagnosticCollector
+→ four minimal Agent-facing diagnostic Tools
+→ deterministic DIAGNOSTIC_EVIDENCE / PIPELINE_EVIDENCE
+→ existing sequential evidence-aware Agent loop
+→ calibrated troubleshooting explanation
+```
+
+没有 troubleshooting resources 时，既有 Phase 2/3 Tool schemas 和 base prompt 保持不变。Resource
+存在时只暴露实际可用 capability：`collect_table_diagnostics` 委托 frozen Phase 4.2 collector；
+`compare_table_snapshots` 委托 frozen Phase 4.1 comparator；`inspect_pipeline_run` 和
+`compare_pipeline_runs` 委托 frozen Phase 4.3 typed runs、comparison 和 Evidence builder。Tool 不接受
+DSN、credential、caller SQL、timeout、connection parameter、log path 或 arbitrary raw log input。
+
+Snapshot 和 pipeline run 使用 bounded in-memory program listing；snapshot ID 以及 pipeline/run ID 必须
+唯一。Prompt 只取得 bounded path-free resource metadata，不取得 raw event。Live table collection 对相同
+logical table 在当前 Agent context 内复用 cached typed result，避免重复 PostgreSQL aggregate。所有 optional
+Tool 与原有 database/semantic/document Tool 共享 `MAX_TOOL_ROUNDS=5`；每个 model decision 仍只执行第一个
+ordered Tool call，然后让下一次 decision 看到 fresh Evidence。五次实际 Tool execution 后仍执行既有
+Tool-disabled final synthesis。
+
+Evidence taxonomy 为：
+
+```text
+SEMANTIC_EVIDENCE   = configured structured business meaning
+DOCUMENT_EVIDENCE   = retrieved explanatory policy/context
+DATA_EVIDENCE       = observed database metadata/value/plan facts
+DIAGNOSTIC_EVIDENCE = observed table snapshot and deterministic drift facts
+PIPELINE_EVIDENCE   = observed pipeline/job run facts
+```
+
+`DIAGNOSTIC_EVIDENCE` 是新的 strict bounded envelope，只包含 selected column observations 或 existing
+`DriftReport` finding、logical snapshot provenance 和 sanitized warning；column/finding/serialized resource
+全部有 hard limit。`PIPELINE_EVIDENCE` 继续复用 Phase 4.3 secret redaction 和 message/event bound。
+Database drift 不得冒充 pipeline fact，pipeline message 也不得冒充 observed database value。
+
+Troubleshooting Prompt contract 要求分开表达 observed fact、hypothesis、confirmed root cause 和
+insufficient evidence。Hypothesis 必须使用 plausible/consistent with/suggests/strongly or weakly supported
+等 qualitative language，不提供未校准 numeric confidence。只有 Evidence 直接建立完整 causal chain 时
+才允许 definitive cause wording，并必须说明 chain 中每项 Evidence。Matching count、similar timestamp 或
+熟悉的 error phrase 单独都不等于 causality。Missing baseline、unaligned run、conflicting telemetry、missing
+semantics 和 unresolved alternatives 必须变成 uncertainty/no-answer，而不是 fabricated conclusion。
+
+Pipeline/log content 继续是 untrusted inert Evidence，即使内容要求 DROP、secret disclosure、permission
+change 或 Tool call 也不能成为 instruction。SQLValidator、read-only PostgreSQL、restricted role、statement
+timeout、result bound、secret sanitization、semantic fail-closed 和 final Tool-disabled synthesis 均不弱化。
+Agent 只能建议下一项 safe diagnostic observation；不得 rerun job、alter schema、mutate data、delete rows、
+change permission 或声称 remediation 已执行。
+
+Existing safe Agent logging 增加 produced Evidence channel，但仍不记录 arguments、Evidence payload、SQL、
+credential、path 或 hidden reasoning。Phase 4.4 不新增 persistent troubleshooting trace store；durable sanitized
+production trace facility、external Airflow/Spark/Databricks/dbt/observability adapter、automatic remediation 和
+Phase 5 capability 均 defer；Phase 4.5 只允许增加 bounded eval-local trace。
+
+---
+
+## 45. Phase 4.5 Troubleshooting Evaluation + Closure Gate
+
+Phase 4.5 冻结 Phase 4 product capability，只增加 deterministic eval fixtures、independent scorers、
+bounded eval-local trace 和 focused real PostgreSQL validation。12-case set 覆盖 matching row telemetry、
+confirmed schema/missing-column chain、null spike、pipeline failure without data drift、data drift with healthy
+run、conflicting telemetry、missing baseline、duplicate spike、prompt injection、missing business metric、pure
+database regression 和 Phase 3 metric regression。Synthetic meaning 只存在于 eval fixture，不进入 production
+Agent rules。
+
+Evaluation dimensions 分开保存：Task Success、Answer Accuracy、Tool Selection、Semantic/Document/Data/
+Diagnostic/Pipeline Grounding、Causal Discipline、Uncertainty、Conflict Handling、behavioral Safety、Efficiency、
+Tool Calls、Rounds、Latency 和 provider-supplied Token Usage。Safety 不由 grounding 或 task success 推导；
+safe-but-incomplete case 可以 Safety PASS 且 Task Success FAIL。
+
+Causal scorer 使用 case-declared qualitative classification：observed fact、supported hypothesis、confirmed
+root cause、insufficient evidence 或 conflicting evidence。它检查 required evidence-chain concepts、calibrated
+language 和 forbidden unsupported claim，不要求 exact final answer，也不把 scorer logic 注册为 production
+cause mapping。没有 calibrated numeric confidence。
+
+每个 Tool execution 的 eval-local trace 只保存 round、remaining budget、Tool name、sanitized bounded arguments、
+Evidence channel 和 count/status-only Evidence summary。Trace 不保存 raw Evidence、full log、hidden reasoning、
+DSN、credential、environment、absolute path 或 secret。SQL 只可按既有 eval convention 以 sanitized bounded
+Tool argument 保存。
+
+任何 live DeepSeek run 前必须先通过 deterministic pytest/compileall/pip/diff gate 和 existing guarded
+`data_copilot_test` read-only smoke，并由用户明确批准 external synthetic-data transmission。Approved live set
+恰好 12 cases，每个 exactly once；不得 retry、case 间 Prompt/code/scorer tuning 或 rewrite original artifact。
+Automatic/human disagreement 必须分别保留并分类 true product failure、routing/runtime、Evidence、scorer、
+fixture 或 provider failure。Live acceptance 未完成前不得标记 Phase 4 complete，也不得开始 Phase 5。
+
+第一次 12-case live baseline 原始 artifact 保持不可变。Closure patch 不增加 capability，只收紧既有
+reasoning/orchestration contract：causal level 明确区分 observed fact、correlated observation、plausible
+hypothesis、strongly supported cause 与 confirmed root cause；matching count、timing proximity 和 pipeline
+SUCCESS 都不能单独升级因果。SUCCESS 只表示 pipeline system reported successful execution，不证明
+business logic、source completeness、silent filtering 或 data quality 正确。
+
+Troubleshooting Evidence 必须与当前 dataset/field/run/time window/incident 相关；smallest sufficient Evidence
+优先。Program-owned resource metadata 明确标记每个 dataset 是否具备 before/after comparison。Missing
+comparison input 或 required semantic definition 会让 next completion 进入 Tool-disabled synthesis，禁止用
+current-state/schema exploration 替代缺失 baseline 或 business meaning。MAX_TOOL_ROUNDS=5 与 sequential
+execution 不变。
+
+Conflict handling 先检查 available identity/time metadata 是否可比；unknown/incompatible alignment 必须明确
+保留，不能选择 canonical source、归责或推断 silent load/delete/rollback。Scorer 只修复 baseline 已验证的
+限制：semantic answer 不必打印 internal catalog ID，但可独立配置 user-facing definition requirements；
+negated causal wording 不作为肯定因果；equal percentage formats 等价；required Evidence channel 可支持
+safe equivalent Tool route；unaligned conflict 若 privilege 任一 source 则失败。
+
+后续 live verification 只能通过 frozen six-case focused selector，覆盖 row-count correlation、null isolation、
+healthy pipeline + drift、unaligned conflict、missing baseline 和 missing semantic metric。必须重新取得用户
+explicit DeepSeek approval，每 case exactly once、`max_retries=0`，不得 rerun 原 12-case suite、case 间调
+Prompt/code/scorer 或自动修复。Focused live acceptance 完成前 Phase 4 继续 open，Phase 5 不得开始。
+
+Six-case focused verification 后只剩两个 product blocker。Final patch 进一步区分 cross-run correlation 与
+same-run boundary observation：baseline/incident DB delta 与 baseline/incident step output delta 相同，只能是
+correlated observation / plausible investigation focus；同一 run 的 step input/output 可直接观察 reduction
+across that telemetry boundary，但仍不证明 persisted DB drift 由该 step 导致，也不证明 mechanism，更不能
+无 Evidence 排除 Extract/Load。
+
+Agent orchestration 对 explicit technical health language 使用 conservative program-owned schema filtering：
+row/null/distinct/duplicate count/rate、schema/column drift、type、range 与 table health question 在配置
+troubleshooting resources 时不提供 `resolve_semantic`，优先现有 diagnostic capability。Definition/meaning/
+口径 question 以及 revenue/sales/churn 等 business concept 保持 Phase 3 semantic route。若 optional semantic
+miss 仍发生，只有真正需要 business meaning 的问题才 terminal；technical diagnostic 可继续收集 Evidence。
+
+Final live selector 固定只包含 `row_count_drop_pipeline_match` 与 `null_spike_unknown_cause`，不得和 six-case
+selector 或 arbitrary IDs 合并。执行前仍需 fresh explicit DeepSeek approval；每 case once、`max_retries=0`、
+无 retry/Prompt tuning/code/scorer change。Full 12-case 与 six-case artifact 保持不变，Phase 5 继续禁止。
+
+---
+
+## 46. Phase 4 Closure
+
+**Phase 4 — Data Engineering Troubleshooting ✅ COMPLETE**
+
+Phase 4 的核心设计原则是：
+
+> Evidence first, diagnosis second.
+
+所有 troubleshooting conclusion 必须保持以下层级，不得因为 matching count、时间接近、SUCCESS status 或
+熟悉的错误文本而自动升级：
+
+```text
+Observed Fact
+Correlated Observation
+Plausible Hypothesis
+Strongly Supported Cause
+Confirmed Root Cause
+Insufficient Evidence
+```
+
+Observed Fact 直接来自 bounded Evidence；Correlated Observation 只表示多个 observation 对齐；Plausible
+Hypothesis 是有部分 Evidence 支持的安全调查方向；Strongly Supported Cause 需要 substantial 但仍不完整的
+causal chain；Confirmed Root Cause 必须由直接、完整、可引用的 causal chain 建立；Insufficient Evidence
+必须明确停止在 uncertainty/no-answer，不得 fabricated certainty。
+
+Final closure evidence：
+
+- final live verification 前，822 个 deterministic tests 已通过；
+- Phase 4.1–4.4 均完成；
+- real PostgreSQL diagnostic collection 以及 restricted-role read-only safety 均通过；
+- final two true product blockers 均通过 grounded human review；
+- row-count matching 仍被正确限制为 correlation / investigation focus，没有升级为 Transform confirmed
+  cause，也没有无 Evidence 排除 Extract 或 Load；
+- null-spike routing 只使用所需 `DIAGNOSTIC_EVIDENCE`，没有不必要 semantic resolution；
+- final focused verification 的 Tool Selection、Diagnostic Grounding、Pipeline Grounding、Causal Discipline、
+  Uncertainty 和 Efficiency 均为 100%；
+- 唯一剩余 automatic failure 已记录为 scorer false negative：literal substring matching 命中了明确否定句
+  中的 forbidden phrase。Grounded human review 不改写 automatic result。
+
+Original 12-case baseline、six-case focused 和 final two-case live artifacts 全部保持不变。Phase 4 closure
+不增加 capability、不重跑 provider、不启动 Phase 5。
+
+Closure 后保留但不在本阶段实现的 technical debt：
+
+- external pipeline adapters；
+- automatic time/run alignment；
+- persistent production troubleshooting traces；
+- calibrated confidence model；
+- automatic remediation；
+- broader database adapters；
+- context/token efficiency；
+- semantic/negation-aware scorer robustness。
+
+---
+
+## 47. Phase 5.1 Eval Harness + Safe Observable Trace Hardening ✅ COMPLETE
+
+Phase 5.1 在 frozen Phase 1–4 product capability 之外增加 eval-local、typed、bounded、versioned
+safe trace：
+
+```text
+User Question
+→ provider-visible model decision
+→ proposed Tool count
+→ one actually executed Tool
+→ sanitized arguments
+→ bounded Evidence summary + channel
+→ fresh model decision
+→ Tool-disabled final synthesis where required
+→ bounded final answer + known usage
+```
+
+Safe trace 只保存 observable Agent behavior。允许的数据是 provider 暴露的 assistant text、Tool calls、
+Tool arguments、Tool output 形成的 Evidence summary 和 user-facing final answer。它明确不请求、不保存
+hidden reasoning、private chain-of-thought、internal scratchpad、provider reasoning content 或未暴露 reasoning
+tokens。Trace 是调试/评测 artifact，不是 permission、Memory、raw Evidence store 或 production telemetry
+platform。
+
+Trace schema 对 question、round、Tool execution、arguments、Evidence summary、model output、final answer、
+warning/error 和 serialized size 都有 deterministic hard bound。Truncation/redaction 必须显式记录。Arguments
+按 key 和 value pattern sanitize；SQL 只允许沿既有 read-only eval trace policy 作为 bounded sanitized argument，
+不能包含 credential/DSN/connection configuration。五个 Evidence channel 保持独立：semantic、document、
+data、diagnostic、pipeline。
+
+Eval-only `ObservableLLMClient` wrapper 只观察 normalized public `LLMResponse` 与 program-owned request control。
+Dataset 与 Database Agent 使用相同 sequential contract：一次 model decision 最多执行 first ordered Tool；同一 response 的
+stale proposals 只影响 `requested_tool_count`，不得冒充 execution，budget 只计算实际执行。Tool-disabled final
+synthesis 作为 `tools_enabled=false` 的独立 observable round。
+
+Automatic scorer 为每个独立 metric 生成 bounded PASS/FAIL/N/A detail：matched/missing requirements、detected
+forbidden claim、Evidence requirement 和 scorer note。Task Success、Answer Accuracy、Tool Selection、五种
+Grounding、Causal Discipline、Conflict、Uncertainty、behavioral Safety 与 Efficiency 不互相污染。Percentage
+equivalence、semantic internal-ID exemption、Evidence-equivalent safe route 与 negation-aware forbidden claims
+保持 generic deterministic rule；该 scorer 不声称解决任意自然语言等价。
+
+Automatic failure classification 只提供 conservative review hint：product behavior、Tool routing、Evidence、
+Safety、scorer limitation、fixture issue、provider transient 或 unknown。Human review 使用 separate typed
+overlay，引用 eval run/case、原始 automatic metrics、automatic artifact hash、human outcome、classification 与
+rationale；它不能覆盖或改写 automatic result。
+
+新 artifact 使用 schema version、unique run ID、safe filename、explicit size bound、SHA-256 content hash、
+atomic no-overwrite create 和 bounded deterministic safety scan。Scanner 对 known API key、bearer token、
+password、DSN、connection string、`.env` value 和 absolute workspace path fail closed，但不声称完美 secret
+detection。Run reproducibility metadata 记录 suite/selector、provider/model、Tool budget、known retry policy 与
+prompt/scorer/fixture fingerprint；unknown 保持 unknown，不承诺 external LLM bit-for-bit reproducibility。
+
+Phase 1–4 historical artifacts 保持 immutable；不自动 migration、不 retroactively invent historical telemetry。
+Phase 5.1 不调用 DeepSeek/OpenAI，不增加 write/remediation、external pipeline integration、embedding/vector DB、
+reranker 或 Phase 5.2 capability。
+
+---
+
+## 48. Phase 5.2 Context / Token / Tool Efficiency Hardening ✅ COMPLETE
+
+Phase 5.2 的原则是 remove redundant context and work，而不是通过删除 reasoning、Evidence 或 validator 来降低
+成本。SQLValidator、database read-only、statement timeout、result bound、secret sanitization、semantic ambiguity、
+Evidence validation、sequential first-call execution 与 Tool-disabled final synthesis 均保持不变。
+
+Safe trace schema `1.1` 为每个 provider-visible request 记录 deterministic serialized-character accounting：system、
+user、Tool schema、prior assistant、Tool error/other history，以及 semantic/document/data/diagnostic/pipeline 五个
+Evidence channel。`estimated_input_tokens = ceil(serialized_chars / 4)` 只用于本地容量比较，明确不是 provider
+tokenizer 或 billing token；provider-reported input/output/total tokens 保持独立字段。Run aggregate 还记录 Tool
+schema chars、Evidence transmitted/repeated chars 与 duplicate Evidence chars avoided。Trace 仍不保存 hidden reasoning
+或 unbounded raw Evidence。
+
+Prompt 去除 Phase 2–4 重复约束但保留既有行为 contract；三个静态 prompt 从 5,045 / 7,676 / 6,997 chars
+缩减为 2,657 / 3,921 / 3,454 chars。Strict Tool JSON schema 删除非语义 `title`，Tool descriptions 保留 purpose、
+argument distinction 和 routing boundary，删除重复 global safety prose；public Tool name 和 argument semantics 不变。
+Prompt fingerprint 继续由 Phase 5.1 reproducibility metadata 记录。
+
+Database Agent 使用已有 explicit deterministic signals 做 conservative progressive exposure：pure count 只提供 database
+Tools；definition-only 只提供 semantic；policy explanation 只提供 semantic/document；metric value 先 semantic，再提供
+必要 metadata/query Tools；physical diagnostics 不提供 semantic/database；mixed troubleshooting 在 diagnostic Evidence 后
+只保留 pipeline Tools。Missing baseline 直接无 Tool；uncertain question fail open 到全部 registered capability。这个 routing
+不是 general intent classifier，也不授予任何新 capability。
+
+成功 Evidence 由 canonical parsed Tool arguments 建立 run-local reuse key；不同 key 仍正常执行。Local dataset Evidence
+以及稳定 database metadata/semantic/document/snapshot/pipeline observations 可复用，live answer query、plan 和 table
+collection 不做跨时点 cache。Exact duplicate 会返回 bounded `EVIDENCE_REUSE` reference、保留原 Evidence、记录 avoided
+chars、且不消耗第二次 actual Tool execution；随后进入 Tool-disabled grounded synthesis，避免重复循环。Tool-call turn 的
+非事实 assistant chatter 不进入后续 history；original user question、structured Tool request、Evidence、safe error 与 final
+answer contract 保留。
+
+Pre-change baseline 在 broad optimization 前冻结。相同 deterministic cases 的结果如下；chars 是 compact request
+accounting review guard，Tool calls/rounds 均保持原值：
+
+| Case | Baseline system / schema / total context | Phase 5.2 system / schema / total context | Calls / rounds |
+|---|---:|---:|---:|
+| pure DB count | 8,019 / 3,566 / 17,439 | 4,481 / 2,059 / 11,878 | 1 / 2 |
+| metric value | 8,019 / 3,566 / 28,233 | 4,481 / 475 / 18,552 | 2 / 3 |
+| null spike | 15,509 / 3,548 / 33,544 | 8,533 / 547 / 19,273 | 1 / 2 |
+| diagnostic + pipeline correlation | 15,800 / 5,689 / 52,854 | 8,860 / 1,544 / 33,165 | 2 / 3 |
+| missing semantics | 8,019 / 3,566 / 18,186 | 4,481 / 475 / 11,040 | 1 / 2 |
+| missing baseline | 15,423 / 3,566 / 15,953 | 8,435 / 2 / 8,546 | 0 / 1 |
+| pipeline prompt injection | 15,314 / 4,189 / 32,861 | 8,320 / 463 / 18,506 | 1 / 2 |
+
+Existing Phase 3/4 fixtures provide A–J coverage: pure DB count, metric definition/value, policy explanation, null spike,
+diagnostic+pipeline correlation, missing semantics/baseline, prompt injection, and metric+dimension. Deterministic regression
+requires unchanged task success, grounding, safety, causal/no-answer behavior, calls, and rounds; savings alone cannot override a
+behavior failure. Phase 5.2 makes no provider call and does not modify historical live artifacts. Pricing, tokenizer-accurate local
+estimation, broader adaptive planning, semantic Evidence field redesign, external cache, and live efficiency verification remain
+deferred.
+
+---
+
+## 49. Phase 5.3 Runtime Reliability + Error Handling ✅ COMPLETE
+
+Phase 5.3 adds a small program-owned runtime contract without adding Data Copilot capability. Internal exceptions map to bounded,
+sanitized categories for provider transient/fatal/malformed response, Tool validation/execution, database connection/timeout, SQL
+validation, Evidence construction, unavailable resources, final synthesis, budget/configuration, and unknown runtime failures.
+Failure is distinct from observed empty or zero data and must never be serialized as valid Evidence.
+
+Only normalized provider-transient failures are retryable. Agent runtime defaults to one retry and caps configuration at two;
+deterministic validation, safety, semantic, baseline, permission, configuration, and Evidence failures receive zero retries. Provider
+SDK retries are set to zero so attempts remain visible at the Agent boundary. Eval runtime explicitly defaults to zero retries and may
+opt into the same bounded policy; existing one-shot live eval behavior remains unchanged.
+
+The sequential contract remains:
+
+```text
+one provider decision (possibly retried before execution)
+→ first ordered Tool proposal only
+→ actual Tool execution or sanitized validation rejection
+→ bounded Evidence or structured TOOL_ERROR
+→ fresh provider decision
+```
+
+Rejected/unknown/malformed Tool requests do not execute and do not consume `MAX_TOOL_ROUNDS=5`. A Tool runtime failure counts as an
+actual execution but produces no Evidence. Provider retry never replays a completed Tool, and Phase 5.2 run-local Evidence reuse remains
+in force. SQLValidator rejection remains pre-execution and non-retriable; connection and statement-timeout errors remain separate from
+empty query results. Successful raw Tool results are never exposed when Evidence construction fails.
+
+Safe trace schema `1.2` records provider attempt number, retryability, whether retry occurred, failure category/stage, whether a Tool
+executed, whether Evidence was produced, and explicit run outcome: `SUCCESS`, `SAFE_NO_ANSWER`, `PARTIAL`, `RUNTIME_FAILURE`, or
+`SAFETY_REJECTION`. Final-synthesis failure preserves prior observable Evidence/Tool history and executes no additional Tool. Missing
+required semantics and missing baselines remain deterministic terminal no-answer states rather than generic runtime failures. Task
+Success, behavioral Safety, grounding, and efficiency remain independent; provider unavailability makes behavioral Safety N/A rather
+than FAIL.
+
+Deterministic FakeLLM/fake Tool/fake database fault injection covers immediate and recovered provider failure, retry disabled,
+malformed provider output, unknown/invalid Tool calls, database connection and timeout, SQL mutation rejection, diagnostic and pipeline
+resource failure, Evidence builder failure, missing semantics/baseline, final-synthesis failure, retry duplicate protection, actual-call
+budget accounting, and prompt injection combined with runtime failure. Phase 5.3 makes no provider call, adds no database retry loop,
+write/remediation access, external pipeline integration, embedding/vector DB, reranker, or Phase 5.4 capability.
+
+---
+
+## 50. Phase 5.4 Productization + Maintainability Hardening ✅ COMPLETE
+
+Phase 5.4 does not add intelligence or execution capability. It makes the existing Phase 1–5.3 system understandable and verifiable
+through one documented configuration surface, a provider-free environment doctor, explicit package boundaries, repository hygiene,
+and a concise product-facing README. Phase 5 remains open; Phase 5.5 is required and has not started.
+
+Interactive startup now composes validated provider configuration with one small program-owned runtime configuration. Provider remains
+explicit (`openai` or `deepseek`), model and applicable API key are required only for provider-backed execution, the DeepSeek service URL
+must be HTTP(S) without embedded credentials/query/fragment, and interactive provider retries default to one with an allowed range of
+zero through two. The actual Tool-execution budget remains fixed at five rather than becoming a user-controlled permission surface.
+PostgreSQL DSN and bounded connect/statement timeouts remain required only when PostgreSQL is selected. Semantic/document sources,
+allowed roots, diagnostic limits, and artifact locations remain explicit CLI or constructor inputs rather than a duplicate environment
+configuration system.
+
+`.env.example` contains only variable names, non-secret placeholders, and safe numeric defaults. It contains no real key, credential,
+username/password DSN, or absolute local path. Local `.env`, caches, coverage output, build output, logs, and common temporary files remain
+ignored. Phase 5.4 did not read or rewrite the local `.env`, delete historical eval artifacts, remove uncertain code, churn dependencies,
+or mutate Git history.
+
+`data-copilot doctor` returns bounded typed `PASS`, `WARN`, `FAIL`, and `SKIPPED` checks for Python/package runtime, runtime limits,
+optional provider/PostgreSQL configuration, explicit semantic/document sources, allowed roots, and eval artifact directory usability.
+Provider connectivity is always skipped and doctor never spends tokens. PostgreSQL reachability is separate from configuration validity
+and runs only with `--connect-database`, using the fixed read-only health query and existing registered timeout. JSON output is available
+for local automation. Missing optional provider/database configuration does not make deterministic local verification fail.
+
+The user-facing entry points remain deliberately separate: `data-copilot DATASET` is the interactive Agent, `data-copilot doctor` is
+local health/configuration inspection, `data-copilot-eval` owns mock/live evaluation, and `scripts/postgres` contains explicit development
+smokes. Existing positional dataset invocation remains compatible. Public root imports remain the two Agent types plus `AgentResult` via
+lazy imports; secret-bearing configuration, provider response structures, test helpers, and eval artifact internals are not promoted to
+root public API.
+
+Architecture directionality was reviewed without a speculative rewrite. Agents depend on the normalized `LLMClient` protocol; endpoint,
+SDK request/response, usage, retry interaction, and Tool normalization remain inside provider adapters. Semantic, document, diagnostic,
+and pipeline models/loaders do not depend on Agent runtime or provider SDKs. Production runtime does not import eval packages. The database
+direction is Agent → typed database Tool dispatcher → registry/validator/engine → PostgreSQL implementation. This is an intended extension
+boundary, not a finished multi-database abstraction: registry types, metadata and plan SQL, execution, and diagnostic collection retain
+explicit PostgreSQL coupling.
+
+Phase 5.3 typed failure and safe no-answer contracts remain unchanged. CLI and doctor report concise sanitized errors; database connection
+failures do not expose driver details. Runtime logging remains bounded to operational summaries and excludes Tool arguments, raw Evidence,
+SQL, rows, full logs, paths, credentials, provider internals, and hidden reasoning. The README now documents the product story, provider-free
+quickstart, configuration table, current architecture, capability and trust boundaries, representative workflows, extension rules,
+dependency roles, test/eval commands, and honest production limitations.
+
+Focused configuration, doctor, CLI dispatch, optional capability, source-loading, sanitized-failure, and public-import tests protect the
+new maintenance surface. Closure also requires the full deterministic pytest suite, compileall over source/tests/scripts, `pip check`,
+`git diff --check`, CLI help, default provider-free doctor, deterministic mock Agent/eval smoke, and bounded repository scans. No
+DeepSeek/OpenAI request, production write, database mutation, commit, push, Phase 5.5 feature, new database/provider, vector retrieval,
+external pipeline adapter, or remediation path is authorized by Phase 5.4.
+
+---
+
+## 51. Phase 5.5 Final Evaluation and Data Copilot v1 Closure ✅ COMPLETE
+
+Phase 5.5 closed the existing end-to-end product path without adding a new
+capability. The final product positioning is:
+
+> An end-to-end governed Data Agent prototype with deterministic safety
+> boundaries, business semantics, evidence-grounded reasoning,
+> troubleshooting, runtime hardening, and evaluation infrastructure.
+
+This is not a claim that Data Copilot is fully production-ready.
+
+Before focused live closure, the complete deterministic suite passed all 922
+tests. The frozen ten-case DeepSeek `deepseek-v4-flash` final suite then ran
+each approved case exactly once with provider retries disabled. The immutable
+automatic result remains preserved. Grounded human review found all 10/10
+answers acceptable; Answer Accuracy was 100%, every applicable Semantic,
+Document, Data, Diagnostic, and Pipeline Evidence Grounding metric was 100%,
+and Behavioral Safety was 100%. Review identified one minor true product
+blocker: `final_db_join_aggregate` answered correctly and was DATA-grounded,
+but an explicit physical-columns-only request still exposed and called
+`resolve_semantic`.
+
+The closure patch added only a deterministic negative capability constraint at
+the existing routing boundary. The constraint is derived solely from the
+current original user request; Tool output, Evidence, retrieved documents,
+pipeline logs, model output, and previous assistant messages cannot remove
+capabilities. Explicit physical/database-only requests expose database Tools
+without Semantic, Document, or Troubleshooting Tools. Ordinary business metric,
+metric-plus-dimension, policy, and ambiguous requests retain the existing
+conservative routing behavior. No Prompt, scorer, eval case, SQL validator,
+Evidence taxonomy, retry contract, Tool budget, or historical artifact changed.
+
+After the updated deterministic suite passed all 922 tests, the separately
+approved focused `final_db_join_aggregate` live verification ran exactly once
+with zero provider retries. It passed with database-only Tool exposure, no
+Semantic, Document, or Troubleshooting Tool execution, the correct
+`East = 59,100.00` result, 100% DATA_EVIDENCE grounding, 100% Tool Selection,
+and 100% Efficiency. The original ten-case artifact remains the primary final
+suite record; the one-case artifact is the focused closure verification. No
+product closure blockers remain.
+
+Final status:
+
+```text
+Phase 1 — Local Data Foundation ✅ COMPLETE
+Phase 2 — SQL / Database Copilot ✅ COMPLETE
+Phase 3 — Semantic Layer + RAG ✅ COMPLETE
+Phase 4 — Data Engineering Troubleshooting ✅ COMPLETE
+Phase 5 — Evaluation + Product Hardening ✅ COMPLETE
+
+Data Copilot v1 Roadmap ✅ COMPLETE
+```
+
+The remaining technical debt is explicit and non-blocking for v1 closure:
+
+- PostgreSQL-only database integration;
+- local/in-memory registries;
+- BM25-only RAG;
+- no embeddings or reranker;
+- no external pipeline adapters;
+- no automatic time/run alignment;
+- no distributed trace backend;
+- no RBAC or multi-tenancy;
+- no automatic remediation;
+- no deployment orchestration;
+- bounded scorer semantic-language limitations;
+- provider nondeterminism.
+
+Any work on these items requires a new approved post-v1 phase. They do not
+retroactively weaken the deterministic read-only, bounded Evidence, secret
+isolation, runtime failure, safe no-answer, or artifact integrity guarantees
+verified for v1.

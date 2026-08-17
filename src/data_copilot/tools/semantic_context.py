@@ -29,8 +29,7 @@ class _ResolveSemanticArguments(BaseModel):
         min_length=1,
         max_length=MAX_SEMANTIC_QUERY_TERMS,
         description=(
-            "Already-extracted candidate metric, dimension, or glossary terms. "
-            "Use exact IDs, canonical names, or explicit synonyms only."
+            "Candidate metric/dimension/glossary IDs, names, or explicit synonyms."
         ),
     )
 
@@ -59,11 +58,8 @@ class SemanticResolutionTool:
         self._schema = ToolDefinition(
             name=self.name,
             description=(
-                "Resolve bounded candidate business terms against the configured "
-                "structured Semantic Catalog. Returns authoritative "
-                "SEMANTIC_EVIDENCE for exact IDs, canonical names, or explicit "
-                "synonyms. Use for metric definitions, business dimensions, and "
-                "glossary meaning; missing or ambiguous terms fail explicitly."
+                "Resolve bounded configured business definitions into canonical "
+                "SEMANTIC_EVIDENCE; missing or ambiguous terms fail explicitly."
             ),
             parameters=_strict_json_schema(_ResolveSemanticArguments),
         )
@@ -131,6 +127,7 @@ def _strict_json_schema(model: type[BaseModel]) -> dict[str, Any]:
     def make_strict(node: Any) -> None:
         if isinstance(node, dict):
             node.pop("default", None)
+            node.pop("title", None)
             if node.get("type") == "object":
                 properties = node.get("properties", {})
                 if isinstance(properties, dict):
